@@ -1,8 +1,8 @@
 import BayouPipeline from './bayou-pipeline'
-import { AuthProvider, LoginScreen, useAuth } from './lib/auth'
+import { AuthProvider, LoginScreen, SetNewPasswordScreen, useAuth } from './lib/auth'
 
 function Gate() {
-  const { user, loading } = useAuth()
+  const { user, loading, recoveryMode } = useAuth()
   if (loading) {
     return (
       <div style={{
@@ -16,6 +16,9 @@ function Gate() {
       }}>Loading…</div>
     )
   }
+  // User clicked a password-reset email link → show the "set new password" form
+  // even if they're technically authenticated (recovery session).
+  if (recoveryMode) return <SetNewPasswordScreen />
   if (!user) return <LoginScreen />
   return <BayouPipeline />
 }
