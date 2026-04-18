@@ -716,13 +716,13 @@ function SummaryUW({i,c}){
         <span style={{fontSize:14}}>⚠</span>
         <div>
           <span style={{fontSize:10,fontWeight:700,color:C.bad,fontFamily:F,textTransform:"uppercase",letterSpacing:.5}}>Equity Trapped at Refinance</span>
-          <span style={{fontSize:10,color:C.bad,fontFamily:F,marginLeft:8}}>{fmt$(c.wf.d.gap)} of Boris's capital remains in the deal · NCF splits at {(c.wf.d.ncfBPct*100).toFixed(0)}/{(c.wf.d.ncfJPct*100).toFixed(0)} (pre-return)</span>
+          <span style={{fontSize:10,color:C.bad,fontFamily:F,marginLeft:8}}>{fmt$(c.wf.d.gap)} of {p1}'s capital remains in the deal · NCF splits at {(c.wf.d.ncfBPct*100).toFixed(0)}/{(c.wf.d.ncfJPct*100).toFixed(0)} (pre-return)</span>
         </div>
       </div>}
       {c.wf.type==="Sponsor"&&c.wf.d.rec&&<div style={{background:"#f0fdf4",borderBottom:`1px solid ${C.ok}`,padding:"7px 14px",display:"flex",alignItems:"center",gap:10}}>
         <span style={{fontSize:14}}>✓</span>
         <div>
-          <span style={{fontSize:10,fontWeight:700,color:C.ok,fontFamily:F,textTransform:"uppercase",letterSpacing:.5}}>Boris Fully Recouped</span>
+          <span style={{fontSize:10,fontWeight:700,color:C.ok,fontFamily:F,textTransform:"uppercase",letterSpacing:.5}}>{p1} Fully Recouped</span>
           <span style={{fontSize:10,color:C.ok,fontFamily:F,marginLeft:8}}>Tier 2 surplus of {fmt$(c.wf.d.t2)} splits {(c.wf.d.ncfBPct*100).toFixed(0)}/{(c.wf.d.ncfJPct*100).toFixed(0)} · NCF same split</span>
         </div>
       </div>}
@@ -749,9 +749,9 @@ function SummaryUW({i,c}){
               <FR label="Less: Bridge Payoff" val={fmt$(-c.bpOff)} col={C.bad} stripe/>
               <FR label="Less: DSCR Closing" val={fmt$(-c.sel.tcc)} col={C.bad}/>
               <FR label="Net Proceeds at Refi" val={fmt$(c.wf.d.netProc)} bold stripe/>
-              <FR label="Boris Capital Invested" val={fmt$(c.wf.d.borCap)}/>
+              <FR label={p1+" Capital Invested"} val={fmt$(c.wf.d.borCap)}/>
               <tr style={{background:C.bg}}><td colSpan={2} style={{padding:"5px 8px",fontSize:9,fontWeight:700,color:C.navy,textTransform:"uppercase",letterSpacing:.5,fontFamily:F,borderTop:`1px solid ${C.border}`}}>Tier 1 — Return of Capital</td></tr>
-              <FR label="Boris (recoup)" val={fmt$(c.wf.d.t1Boris)} col={C.accent}/>
+              <FR label={p1+" (recoup)"} val={fmt$(c.wf.d.t1Boris)} col={C.accent}/>
               {!c.wf.d.rec&&<FR label="Equity Gap (Trapped)" val={fmt$(-c.wf.d.gap)} bold col={C.bad} stripe/>}
               {c.wf.d.rec&&<Fragment>
                 <tr style={{background:C.bg}}><td colSpan={2} style={{padding:"5px 8px",fontSize:9,fontWeight:700,color:C.navy,textTransform:"uppercase",letterSpacing:.5,fontFamily:F,borderTop:`1px solid ${C.border}`}}>Tier 2 — Surplus Split ({(c.wf.d.ncfBPct*100).toFixed(0)}/{(c.wf.d.ncfJPct*100).toFixed(0)})</td></tr>
@@ -781,7 +781,7 @@ function SummaryUW({i,c}){
               <FR label={p1+" (50%)"} val={fmt$(c.wf.f.b)} stripe/>
               <FR label={p2+" (50%)"} val={fmt$(c.wf.f.j)}/>
             </Fragment>:<Fragment>
-              <FR label="Boris Capital" val={fmt$(c.wf.f.borCap)} stripe/>
+              <FR label={p1+" Capital"} val={fmt$(c.wf.f.borCap)} stripe/>
               <FR label="Tier 1 — Return of Capital" val={fmt$(c.wf.f.t1)}/>
               <FR label="Tier 2 — Profit" val={fmt$(c.wf.f.t2)} stripe/>
               <tr style={{background:C.lb}}><td style={tdS(C.navy,true)}>{p1+" Total"}</td><td style={tdS(C.accent,true,true)}>{fmt$(c.wf.f.b)}</td></tr>
