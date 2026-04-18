@@ -1447,7 +1447,13 @@ function AcquisitionFlowTab({deal,updateDeal,i,si,allDeals}){
     <MiniMap deal={liveDeal} onUpdate={liveUpdate} allDeals={allDeals}/>
 
     {/* Stage Selector */}
-    <Crd><NB ch="Pipeline Stage"/><Pad>
+    <Crd><NB ch="Pipeline Stage & Exit Strategy"/><Pad>
+      {/* Exit strategy selector — drives Pipeline cards, Table, Analytics filters, and which exit summary is emphasized */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,paddingBottom:10,borderBottom:`1px solid ${C.border}`}}>
+        <span style={{fontSize:9,fontWeight:700,color:C.sec,textTransform:"uppercase",letterSpacing:.5,fontFamily:F}}>Exit Strategy</span>
+        {["Flip","Rental","BRRRR","Wholesale"].map(t=>(<button key={t} onClick={()=>f("deal_type",t)}
+          style={{padding:"5px 14px",borderRadius:5,fontSize:10,fontWeight:700,cursor:"pointer",border:`1px solid ${deal.deal_type===t?C.accent:C.border}`,background:deal.deal_type===t?C.accent:C.white,color:deal.deal_type===t?"#fff":C.sec,fontFamily:F}}>{t}</button>))}
+      </div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
         {STAGES.map(s=>(<button key={s} onClick={()=>{
           const upd={...deal,stage:s};
