@@ -2621,10 +2621,39 @@ export default function App(){
   const [sortKey,setSortKey]=useState("date_reviewed");
   const [sortDir,setSortDir]=useState("desc");
   const [selected,setSelected]=useState(new Set());
+  // Undo state — holds recently-deleted deals and a timer to auto-expire the toast
+  const [undoState,setUndoState]=useState(null); // {deals:[...], label:"N deleted"}
+  const undoTimerRef=useRef(null);
+  const UNDO_WINDOW_MS=10000;
+  const scheduleUndoExpiry=()=>{
+    if(undoTimerRef.current)clearTimeout(undoTimerRef.current);
+    undoTimerRef.current=setTimeout(()=>setUndoState(null),UNDO_WINDOW_MS);
+  };
+  const captureDeletion=(deletedDeals,label)=>{
+    setUndoState({deals:deletedDeals,label,stashedUW:{}});
+    scheduleUndoExpiry();
+  };
+  const performUndo=()=>{
+    if(!undoState)return;
+    setDeals(p=>{
+      // Avoid duplicates if the deal was re-saved somehow in the meantime
+      const ids=new Set(p.map(d=>d.id));
+      const restored=undoState.deals.filter(d=>!ids.has(d.id));
+      return [...p,...restored];
+    });
+    setUndoState(null);
+    if(undoTimerRef.current)clearTimeout(undoTimerRef.current);
+  };
 
   const toggleSelect=id=>setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
   const toggleAll=()=>setSelected(p=>p.size===sorted.length?new Set():new Set(sorted.map(d=>d.id)));
-  const deleteSelected=()=>{setDeals(p=>p.filter(d=>!selected.has(d.id)));setSelected(new Set());};
+  const deleteSelected=()=>{
+    const toDelete=deals.filter(d=>selected.has(d.id));
+    if(toDelete.length===0)return;
+    setDeals(p=>p.filter(d=>!selected.has(d.id)));
+    setSelected(new Set());
+    captureDeletion(toDelete,toDelete.length===1?`1 deal deleted`:`${toDelete.length} deals deleted`);
+  };
 
   // Hide drafts (deals created via + Add Deal but not yet confirmed/saved to pipeline) from all views
   const liveDeals=deals.filter(d=>!d.isDraft);
@@ -2811,11 +2840,21 @@ export default function App(){
         setUwDeal(synced);
       }}
       onDiscard={d=>{
-        // Drop the draft entirely — remove from deals (in case updateDeal added it), purge storage, close modal
+        // Drop the deal — remove from deals (in case updateDeal added it) and close the modal.
+        // Drafts (never saved) don't need an undo toast since they weren't in the pipeline yet.
+        const wasInPipeline=deals.some(x=>x.id===d.id&&!x.isDraft);
         setDeals(p=>p.filter(x=>x.id!==d.id));
         try{localStorage.removeItem(`brev-acquisitions:${d.id}`);}catch{}
         setUwDeal(null);
+        if(wasInPipeline)captureDeletion([d],`${d.address||"Deal"} deleted`);
       }}
     />}
+    {/* Undo toast — bottom center, auto-dismisses after UNDO_WINDOW_MS */}
+    {undoState&&<div style={{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:C.navy,color:"#fff",borderRadius:8,boxShadow:"0 8px 24px rgba(0,0,0,.25)",display:"flex",alignItems:"center",gap:14,padding:"10px 14px",fontFamily:F,zIndex:9500,minWidth:280}}>
+      <span style={{fontSize:11,fontWeight:600}}>{undoState.label}</span>
+      <div style={{flex:1}}/>
+      <button onClick={performUndo} style={{background:"transparent",color:"#fff",border:"1px solid rgba(255,255,255,.4)",borderRadius:5,padding:"4px 12px",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F,letterSpacing:.4,textTransform:"uppercase"}}>↶ Undo</button>
+      <button onClick={()=>{if(undoTimerRef.current)clearTimeout(undoTimerRef.current);setUndoState(null);}} style={{background:"transparent",color:"rgba(255,255,255,.7)",border:"none",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px"}}>×</button>
+    </div>}
   </div>);
 }
