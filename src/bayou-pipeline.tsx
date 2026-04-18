@@ -7,6 +7,9 @@ import React, { useState, useCallback, useEffect, Fragment, useRef } from "react
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, CartesianGrid } from "recharts";
+import { supabase } from "./lib/supabase";
+import { useAuth } from "./lib/auth";
+import { listDeals, upsertDeal, deleteDeals, subscribeToDeals, migrateLocalStorageIfNeeded } from "./lib/deals-api";
 
 declare global { interface Window { L: any; } }
 
@@ -2631,16 +2634,78 @@ function KpiCard({label,value,sub,col,color}:{label?:any;value?:any;sub?:any;col
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App(){
-  const [deals,setDealsRaw]=useState(()=>{
-    try{
-      const s=localStorage.getItem("brev_deals");
-      const parsed=s?JSON.parse(s):SAMPLE;
-      // Clean up orphan drafts — deals that were created via "+ Add Deal" but never saved.
-      // These can leak into localStorage if the modal was closed without an explicit save/discard.
-      return parsed.filter(d=>!d.isDraft);
-    }catch{return SAMPLE;}
-  });
-  const setDeals=useCallback(updater=>{setDealsRaw(prev=>{const next=typeof updater==="function"?updater(prev):updater;try{localStorage.setItem("brev_deals",JSON.stringify(next));}catch{}return next;});},[]);
+  const {user}=useAuth();
+  const [deals,setDealsRaw]=useState([]);
+  const [loadingDeals,setLoadingDeals]=useState(true);
+  const suppressSyncRef=useRef(false); // when true, setDeals skips the remote write-through
+                                        // (used so realtime events don't bounce back to the server)
+
+  // 1) Load all deals for the signed-in user on mount. Also handles the one-time
+  //    migration of any deals still sitting in localStorage from before the
+  //    Supabase cutover.
+  useEffect(()=>{
+    if(!user)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        await migrateLocalStorageIfNeeded(user.id);
+        const rows=await listDeals();
+        if(!cancelled){setDealsRaw(rows);setLoadingDeals(false);}
+      }catch(err){
+        console.error("Failed to load deals from Supabase:",err);
+        if(!cancelled)setLoadingDeals(false);
+      }
+    })();
+    return ()=>{cancelled=true;};
+  },[user]);
+
+  // 2) Subscribe to real-time changes. When another device edits/creates/deletes
+  //    a deal, patch local state without triggering a write-back.
+  useEffect(()=>{
+    if(!user)return;
+    const channel=subscribeToDeals(user.id,(payload)=>{
+      suppressSyncRef.current=true;
+      setDealsRaw(prev=>{
+        if(payload.eventType==="DELETE"){
+          return prev.filter(d=>Number(d.id)!==Number(payload.old.id));
+        }
+        const row=payload.new;
+        const incoming={...row.data,id:Number(row.id)};
+        const idx=prev.findIndex(d=>Number(d.id)===Number(incoming.id));
+        if(idx===-1)return [...prev,incoming];
+        const copy=[...prev];copy[idx]=incoming;return copy;
+      });
+      // Let the write-through re-engage on the next state change
+      setTimeout(()=>{suppressSyncRef.current=false;},0);
+    });
+    return ()=>{supabase.removeChannel(channel);};
+  },[user]);
+
+  // 3) Write-through setDeals: updates local state + diffs old vs new and
+  //    pushes changes to Supabase. Existing call sites (setDeals(p=>...))
+  //    keep working unchanged — the persistence layer is transparent.
+  const setDeals=useCallback(updater=>{
+    setDealsRaw(prev=>{
+      const next=typeof updater==="function"?updater(prev):updater;
+      if(!user||suppressSyncRef.current)return next;
+      const prevMap=new Map(prev.map(d=>[Number(d.id),d]));
+      const nextMap=new Map(next.map(d=>[Number(d.id),d]));
+      // Upserts (new or changed)
+      for(const [id,deal] of nextMap){
+        const oldDeal=prevMap.get(id);
+        if(!oldDeal||JSON.stringify(oldDeal)!==JSON.stringify(deal)){
+          upsertDeal(deal,user.id).catch(err=>console.error("Upsert failed for deal",id,err));
+        }
+      }
+      // Deletes
+      const deletedIds=[];
+      for(const id of prevMap.keys())if(!nextMap.has(id))deletedIds.push(id);
+      if(deletedIds.length>0){
+        deleteDeals(deletedIds).catch(err=>console.error("Delete failed",deletedIds,err));
+      }
+      return next;
+    });
+  },[user]);
   const [tab,setTab]=useState("Pipeline");
   const [uwDeal,setUwDeal]=useState(null); // deal being underwritten
   const [filterStage,setFilterStage]=useState("All");
@@ -2733,7 +2798,9 @@ export default function App(){
           <div style={{fontSize:20,fontWeight:700,color:"#fff",fontFamily:F}}>Deal Pipeline</div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:9,color:"rgba(255,255,255,.4)",display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:C.ok,display:"inline-block"}}/>Auto-saved</span>
+          <span style={{fontSize:9,color:"rgba(255,255,255,.4)",display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:loadingDeals?C.gold:C.ok,display:"inline-block"}}/>{loadingDeals?"Syncing…":"Synced"}</span>
+          {user&&<span style={{fontSize:9,color:"rgba(255,255,255,.55)",fontFamily:F}}>{user.email}</span>}
+          <button onClick={()=>supabase.auth.signOut()} title="Sign out" style={{background:"transparent",color:"rgba(255,255,255,.75)",border:"1px solid rgba(255,255,255,.25)",borderRadius:5,padding:"5px 10px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:F,letterSpacing:.4,textTransform:"uppercase"}}>Sign out</button>
           <button onClick={()=>{
             // Create a DRAFT deal — only added to pipeline when user clicks Save in the UW modal
             const nd={...EMPTY_DEAL,id:Date.now(),date_reviewed:new Date().toISOString().slice(0,10),isDraft:true};
