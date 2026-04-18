@@ -2612,7 +2612,15 @@ function KpiCard({label,value,sub,col,color}:{label?:any;value?:any;sub?:any;col
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function App(){
-  const [deals,setDealsRaw]=useState(()=>{try{const s=localStorage.getItem("brev_deals");return s?JSON.parse(s):SAMPLE;}catch{return SAMPLE;}});
+  const [deals,setDealsRaw]=useState(()=>{
+    try{
+      const s=localStorage.getItem("brev_deals");
+      const parsed=s?JSON.parse(s):SAMPLE;
+      // Clean up orphan drafts — deals that were created via "+ Add Deal" but never saved.
+      // These can leak into localStorage if the modal was closed without an explicit save/discard.
+      return parsed.filter(d=>!d.isDraft);
+    }catch{return SAMPLE;}
+  });
   const setDeals=useCallback(updater=>{setDealsRaw(prev=>{const next=typeof updater==="function"?updater(prev):updater;try{localStorage.setItem("brev_deals",JSON.stringify(next));}catch{}return next;});},[]);
   const [tab,setTab]=useState("Pipeline");
   const [uwDeal,setUwDeal]=useState(null); // deal being underwritten
@@ -2719,8 +2727,8 @@ export default function App(){
     <div style={{maxWidth:1600,margin:"0 auto",padding:"20px 24px"}}>
       {/* KPIs */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:20}}>
-        <KpiCard label="Active Deals" value={active.length} sub={closed.length+" closed · "+deals.length+" total"} color={C.accent}/>
-        <KpiCard label="Deals Reviewed" value={deals.length} sub="total pipeline" color={C.navy}/>
+        <KpiCard label="Active Deals" value={active.length} sub={closed.length+" closed · "+liveDeals.length+" total"} color={C.accent}/>
+        <KpiCard label="Deals Reviewed" value={liveDeals.length} sub="total pipeline" color={C.navy}/>
         <KpiCard label="Avg Days in Current Stage" value={avgDaysInStage!=null?avgDaysInStage+"d":"—"} sub={active.length?active.length+" active deals":"no active deals"} color={avgDaysInStage!=null&&avgDaysInStage>45?C.bad:avgDaysInStage!=null&&avgDaysInStage>30?C.gold:C.ok}/>
         <KpiCard label="Avg Days Until LOI Sent" value={avgDaysToLOI!=null?avgDaysToLOI+"d":"—"} sub={loiDaysArr.length?loiDaysArr.length+" deals reached LOI":"no LOI data yet"} color={avgDaysToLOI!=null&&avgDaysToLOI>21?C.gold:C.ok}/>
         <KpiCard label="Avg Est. ARV" value={avgARV?fmt$(Math.round(avgARV)):"—"} sub="across all deals" color={C.ok}/>
