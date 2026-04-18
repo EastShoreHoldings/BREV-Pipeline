@@ -2162,7 +2162,20 @@ function AnalyticsView({deals}){
   const byType=Object.entries(deals.reduce((acc:any,d:any)=>{const t=d.property_type||"Unknown";acc[t]=(acc[t]||0)+1;return acc;},{})).map(([name,value]:any)=>({name,value:value as number}));
   const totalBT=byType.reduce((s:number,d:any)=>s+d.value,0);
   const byStage=STAGES.map(s=>({stage:s,count:deals.filter(d=>d.stage===s).length}));
-  const byMonth=Object.entries(deals.reduce((acc,d)=>{if(!d.date_reviewed)return acc;const m=d.date_reviewed.slice(0,7);acc[m]=(acc[m]||0)+1;return acc;},{})).sort().map(([m,count])=>({month:m.replace(/^2026-/,"").replace(/^0/,"")+"/'26",count}));
+  // "Properties Reviewed / Month" buckets by first-touch date. Prefer datePropecting
+  // (user-editable on the Acquisition Flow tab — supports backdating) then fall back to
+  // date_reviewed (auto-stamped when the deal is first created).
+  const byMonth=Object.entries(deals.reduce((acc,d)=>{
+    const src=d.datePropecting||d.date_reviewed;
+    if(!src)return acc;
+    const m=String(src).slice(0,7); // YYYY-MM
+    if(!/^\d{4}-\d{2}$/.test(m))return acc;
+    acc[m]=(acc[m]||0)+1;
+    return acc;
+  },{})).sort().map(([m,count])=>{
+    const [year,month]=m.split("-");
+    return {month:`${parseInt(month,10)}/'${year.slice(-2)}`,count};
+  });
   const totalEq=csFilt.reduce((s,d)=>s+num(d.src_equity),0);
   const totalDbt=csFilt.reduce((s,d)=>s+num(d.src_debt),0);
   const totalOC=csFilt.reduce((s,d)=>s+num(d.src_outside),0);
