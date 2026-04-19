@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <!-- Apple Touch Icon — shown when user adds site to iPhone/iPad home screen.
+       Fills the whole tile (iOS auto-masks corners) with BREV navy. -->
+  <rect width="180" height="180" fill="#1B2A4A"/>
+  <text x="50%" y="52%" text-anchor="middle" dominant-baseline="central"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="120" font-weight="900" fill="#ffffff">B</text>
+</svg>
