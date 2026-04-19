@@ -1347,7 +1347,7 @@ function AssumptionsTab({i,si}){
             <div/>
             {ldr.bands.map((b,bi)=>(<Fragment key={bi}>
               <div style={{color:C.navy,fontWeight:700,fontFamily:F,fontSize:9,padding:"3px 0"}}>{letters[bi]||String(bi+1)}</div>
-              {[["ltc",b.ltc],["ltv",b.ltv],["orig",b.orig],["rate",b.rate]].map(([k,v])=>(<input key={k} type="number" step=".01" value={(v*100).toFixed(1)} onChange={e=>updBand(li,bi,k,parseFloat(e.target.value)/100)} style={{...INP,textAlign:"right",padding:"3px 6px"}}/>))}
+              {[["ltc",b.ltc,1],["ltv",b.ltv,1],["orig",b.orig,2],["rate",b.rate,2]].map(([k,v,dp])=>(<input key={k} type="number" step={dp===2?"0.01":"0.1"} value={(v*100).toFixed(dp)} onChange={e=>updBand(li,bi,k,parseFloat(e.target.value)/100)} style={{...INP,textAlign:"right",padding:"3px 6px"}}/>))}
               <div style={{textAlign:"center"}}>{ldr.bands.length>1&&<button onClick={()=>delBand(bi)} title="Remove band" style={{background:"none",border:"none",color:C.bad,cursor:"pointer",fontSize:12,padding:"0 4px"}}>×</button>}</div>
             </Fragment>))}
           </div>
