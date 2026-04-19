@@ -682,7 +682,10 @@ function SummaryUW({i,c}){
         <Met label="Lot SF" val={i.lotSF?num(i.lotSF).toLocaleString()+" sf":"—"}/><Met label="Year Built" val={i.yearBuilt||"—"}/>
       </div>
       {ut.length>0&&<div style={{marginBottom:10}}><div style={LBL}>Unit Mix</div><div style={{display:"flex",flexWrap:"wrap",gap:6}}>{ut.map((u,idx)=>(<div key={idx} style={{background:C.lb,border:`1px solid ${C.border}`,borderRadius:4,padding:"4px 10px",fontSize:10,color:C.navy,fontWeight:600,fontFamily:F}}>{u.count}x {u.beds}bd/{u.baths}ba</div>))}</div></div>}
-      <div style={{display:"flex",gap:12}}>{i.zillowLink&&<a href={i.zillowLink} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:C.accent,fontFamily:F,fontWeight:600,textDecoration:"none"}}>Zillow ↗</a>}</div>
+      <div style={{display:"flex",gap:12}}>
+        {i.address&&<a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([i.address,i.city||"Baton Rouge",i.state||"LA",i.zip].filter(Boolean).join(", "))}`} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:C.accent,fontFamily:F,fontWeight:600,textDecoration:"none"}}>Google Maps ↗</a>}
+        {i.zillowLink&&<a href={i.zillowLink} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:C.accent,fontFamily:F,fontWeight:600,textDecoration:"none"}}>Zillow ↗</a>}
+      </div>
     </Pad></Crd>
     <Crd><NB ch="Key Metrics"/><Pad><div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
       <Met label="Acquisition" val={fmt$(i.acquisitionPrice)}/><Met label="Construction" val={fmt$(c.constr)}/><Met label="Total Cost Basis" val={fmt$(c.tcb)} col={C.navy} size={16}/><Met label="ARV" val={fmt$(i.arv)} col={C.ok}/>
@@ -1300,6 +1303,7 @@ function AssumptionsTab({i,si}){
       <Fl label="Property Type"><select value={i.propertyType||""} onChange={e=>upd("propertyType",e.target.value)} style={SEL}><option value="">Select…</option>{PROP_TYPES.map(t=><option key={t}>{t}</option>)}</select></Fl>
       <Fl label="Deal Sourcing"><select value={i.dealSource||""} onChange={e=>upd("dealSource",e.target.value)} style={SEL}><option value="">Select…</option>{DEAL_SRCS.map(s=><option key={s}>{s}</option>)}</select></Fl>
       <Fl label="Zillow Link"><div style={{display:"flex",gap:4,alignItems:"center"}}><input value={i.zillowLink||""} onChange={e=>upd("zillowLink",e.target.value)} style={{...INP,color:C.accent,flex:1}}/>{i.zillowLink&&<a href={i.zillowLink} target="_blank" rel="noopener noreferrer" style={{fontSize:10,color:C.accent,fontFamily:F}}>↗</a>}</div></Fl>
+      <Fl label="Google Maps"><div style={{display:"flex",gap:4,alignItems:"center"}}>{i.address?<a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([i.address,i.city||"Baton Rouge",i.state||"LA",i.zip].filter(Boolean).join(", "))}`} target="_blank" rel="noopener noreferrer" style={{...INP,display:"flex",alignItems:"center",justifyContent:"space-between",color:C.accent,textDecoration:"none",cursor:"pointer"}}><span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>Open in Google Maps</span><span>↗</span></a>:<span style={{...INP,color:C.sec,fontStyle:"italic"}}>Add an address to generate a Google Maps link</span>}</div></Fl>
       <div style={{gridColumn:"1/-1"}}><UnitMixEditor value={i.unit_mix||[]} onChange={v=>{
         // Only sync the unit count into `units`. Gross SF stays a manual input under Property Details;
         // Leasable SF is derived separately from the Unit Mix footer.
@@ -1780,6 +1784,7 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
               const grossSF=num(uwInputs.sqft);
               return(<span>{units} unit{units===1?"":"s"} · Gross SF {grossSF.toLocaleString()} · Leasable SF {leasableSF>0?leasableSF.toLocaleString():"—"} · Flood {uwInputs.floodZone}</span>);
             })()}
+            {uwInputs.address&&<a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([uwInputs.address,uwInputs.city||"Baton Rouge",uwInputs.state||"LA",uwInputs.zip].filter(Boolean).join(", "))}`} target="_blank" rel="noopener noreferrer" style={{color:C.lb,fontSize:10,fontFamily:F,textDecoration:"none",fontWeight:600}}>Google Maps ↗</a>}
             {uwInputs.zillowLink&&<a href={uwInputs.zillowLink} target="_blank" rel="noopener noreferrer" style={{color:C.lb,fontSize:10,fontFamily:F,textDecoration:"none",fontWeight:600}}>Zillow ↗</a>}
           </div>
         </div>
