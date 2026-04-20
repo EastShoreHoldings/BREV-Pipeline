@@ -535,8 +535,10 @@ function syncUWToDeal(deal,i,c){
     flood_zone:i.floodZone||deal.flood_zone,
     source:i.dealSource||deal.source,
     // Acquisition financials
-    purchase_price:num(i.acquisitionPrice)||deal.purchase_price,
-    rehab_budget:Math.round(num(c.constr))||deal.rehab_budget,
+    // Authoritative writes — no "|| deal.foo" fallbacks, because `0` is a legitimate
+    // value and JS's falsy coercion would silently resurrect a stale previous value.
+    purchase_price:num(i.acquisitionPrice),
+    rehab_budget:Math.round(num(c.constr)),
     est_arv:arvVal||deal.est_arv,
     // Full Uses buckets — ensures Sources & Uses tie at the analytics level
     use_purchase:Math.round(num(i.acquisitionPrice)),
@@ -549,14 +551,17 @@ function syncUWToDeal(deal,i,c){
     // Cash-to-close flows into src_equity for Sponsor mode, src_outside for Outside mode —
     // never both. This ensures Sources (equity + debt + OC) ties to TCB.
     src_equity:i.capitalSource==="Outside"?0:Math.round(num(c.totalCash)),
-    src_debt:Math.round(num(c.pLoan))||deal.src_debt,
+    src_debt:Math.round(num(c.pLoan)),
     src_outside:i.capitalSource==="Outside"?Math.round(num(c.totalCash)):0,
-    // Computed outputs from underwriting
+    // Computed outputs from underwriting. These are authoritative writes — if the
+    // value is 0 (e.g. no bridge, no rent, DSCR=0), we save exactly that. Old
+    // `|| deal.foo` fallbacks silently resurrected stale values due to JS's
+    // truthy/falsy coercion of 0.
     flip_profit:Math.round(num(c.profit)),
-    flip_roi:c.froe?Number((c.froe*100).toFixed(1)):deal.flip_roi,
-    exit_dscr:c.sel&&c.sel.dscr?Number(c.sel.dscr.toFixed(2)):deal.exit_dscr,
-    cash_out:Math.round(num(c.sel?.co))||deal.cash_out,
-    monthly_income:Math.round(num(c.mRent))||deal.monthly_income,
+    flip_roi:c.froe!=null?Number((c.froe*100).toFixed(1)):0,
+    exit_dscr:c.sel&&c.sel.dscr!=null?Number(c.sel.dscr.toFixed(2)):0,
+    cash_out:Math.round(num(c.sel?.co)),
+    monthly_income:Math.round(num(c.mRent)),
     // Per-sf / per-bed cost benchmarks
     cost_per_sf:i.sqft&&c.constr?Number((num(c.constr)/num(i.sqft)).toFixed(2)):deal.cost_per_sf,
     // Clear draft flag on save
