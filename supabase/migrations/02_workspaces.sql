@@ -29,14 +29,17 @@ create index if not exists workspace_members_user_idx on public.workspace_member
 -- 3. Add workspace_id column to deals
 alter table public.deals add column if not exists workspace_id bigint references public.workspaces(id);
 
--- 4. Create the single BREV workspace (only if it doesn't exist)
+-- 4. Create the single BREV workspace (only if it doesn't exist).
+--    OVERRIDING SYSTEM VALUE is required because the id column is
+--    `generated always as identity`, which normally rejects explicit values.
 insert into public.workspaces (id, name)
+  overriding system value
   values (1, 'Bayou Real Estate Ventures')
   on conflict (id) do nothing;
 
--- Reset the identity sequence so future inserts still increment correctly
+-- Reset the identity sequence so future inserts still increment correctly.
 select setval(pg_get_serial_sequence('public.workspaces', 'id'),
-              coalesce((select max(id) from public.workspaces), 1));
+              greatest((select max(id) from public.workspaces), 1));
 
 -- 5. Backfill: every existing auth user becomes a member of workspace 1.
 --    This pulls in Jon, Boris, and anyone else who already has an account.
