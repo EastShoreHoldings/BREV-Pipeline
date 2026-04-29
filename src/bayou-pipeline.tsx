@@ -450,10 +450,14 @@ function computeAll(i,deal,acqDateOverride){
   const sp=num(i.flipSalePrice)||arv;
   const addlI=i.useBridge?num(i.addlMonthsInterest)*(pLoan*ab.rate/12):0;
   const conc=num(i.concessionPct)*sp,bkrF=num(i.brokerFeePct)*sp;
+  // Exit-side closing costs the seller pays at the flip closing — title
+  // policy, escrow, recording / transfer fees, and any misc adjustments.
+  const exitTitle=num(i.flipExitTitle),exitRecording=num(i.flipExitRecording),exitMisc=num(i.flipExitMisc);
+  const exitClosingCosts=exitTitle+exitRecording+exitMisc;
   // Net Sale Price subtracts the buyer-side tax credit owed at sale closing
-  // (seller's debit per LA proration). Only applies on actual transfers — not
-  // on BRRRR refinances.
-  const nsp=sp-addlI-conc-bkrF-sellerDebitAtSale,bpOff=i.useBridge?pLoan:0;
+  // (seller's debit per LA proration) AND the exit closing costs. Only
+  // applies on actual transfers — not on BRRRR refinances.
+  const nsp=sp-addlI-conc-bkrF-sellerDebitAtSale-exitClosingCosts,bpOff=i.useBridge?pLoan:0;
   const fnp=nsp-bpOff,profit=nsp-tcb,froe=totalCash>0?profit/totalCash:0;
   let wf={};const capInv=totalCash;
   if(i.capitalSource==="Outside"){
@@ -507,7 +511,8 @@ function computeAll(i,deal,acqDateOverride){
     wf={type:"Sponsor",d:wfD,f:wfF};
   }
   return {constr,matSub,contAmt,pLoan,finFees,intCost,cEscrow,debtClose,ltcAch:(acq+constr)>0?pLoan/(acq+constr):0,ltvAch:arv>0?pLoan/arv:0,cc,tcb,cashReq,intRes,totalCash,mRent,aRents,opTax,opIns,opWS,opRep,opMgmt,opMisc,totOpEx,noi,yoc,dscrExits,sel,sp,addlI,conc,bkrF,nsp,bpOff,fnp,profit,froe,wf,capInv,ab,li,bi,
-    taxProration,sellerCreditAtAcq,sellerDebitAtSale,extraYearTaxBills};
+    taxProration,sellerCreditAtAcq,sellerDebitAtSale,extraYearTaxBills,
+    exitTitle,exitRecording,exitMisc,exitClosingCosts};
 }
 
 // ── Shared UI primitives ───────────────────────────────────────────────────
@@ -520,6 +525,52 @@ const INP={border:`1px solid ${C.border}`,borderRadius:3,padding:"3px 6px",fontS
 const SEL={...INP,color:C.pri};
 const LBL={display:"block",fontSize:9,fontWeight:600,color:C.sec,textTransform:"uppercase",letterSpacing:.6,marginBottom:3,fontFamily:F};
 const Fl=({label,children})=><div><label style={LBL}>{label}</label>{children}</div>;
+
+// PctInput — a controlled <input type="number"> for percent values stored as
+// decimals (e.g. 0.075 = 7.5%). Avoids the cursor-jump issue caused by
+// re-formatting the input value on every keystroke. While the field is
+// focused, the user's raw text is preserved verbatim; on blur, we parse and
+// commit the decimal back up to the parent. Step is only used for the up/down
+// arrow controls — it doesn't restrict typing.
+function PctInput({value,onChange,decimals=2,step=0.01,style}){
+  const formatted=Number.isFinite(value*100)?(value*100).toFixed(decimals):"";
+  const [text,setText]=useState(formatted);
+  const [focused,setFocused]=useState(false);
+  // When the underlying value changes from outside (e.g. another keystroke
+  // re-renders the parent) and we're NOT actively editing, sync the text.
+  useEffect(()=>{if(!focused)setText(formatted);},[formatted,focused]);
+  return(<input type="number" step={step}
+    value={focused?text:formatted}
+    onFocus={()=>{setText(formatted);setFocused(true);}}
+    onChange={e=>setText(e.target.value)}
+    onBlur={()=>{
+      setFocused(false);
+      const n=parseFloat(text);
+      if(!isNaN(n))onChange(n/100);
+      else onChange(0);
+    }}
+    style={style||INP}/>);
+}
+
+// NumInput — same pattern but for plain (non-percent) numbers. Use this for
+// dollar amounts where you want to type "1234.56" without the value re-
+// formatting on every keystroke. Pass decimals=0 for whole-number inputs.
+function NumInput({value,onChange,decimals,step,style}){
+  const formatted=Number.isFinite(Number(value))?(decimals!=null?Number(value).toFixed(decimals):String(value??"")):"";
+  const [text,setText]=useState(formatted);
+  const [focused,setFocused]=useState(false);
+  useEffect(()=>{if(!focused)setText(formatted);},[formatted,focused]);
+  return(<input type="number" step={step}
+    value={focused?text:formatted}
+    onFocus={()=>{setText(formatted);setFocused(true);}}
+    onChange={e=>setText(e.target.value)}
+    onBlur={()=>{
+      setFocused(false);
+      const n=parseFloat(text);
+      onChange(isNaN(n)?0:n);
+    }}
+    style={style||INP}/>);
+}
 const FR=({label,val,bold,col,ind,stripe})=>(<tr style={{background:stripe?C.bg:C.white}}><td style={tdS(C.pri,bold,false,ind)}>{label}</td><td style={tdS(col||(bold?C.navy:C.pri),bold,true)}>{val}</td></tr>);
 const Met=({label,val,col,size=15}:{label:any;val:any;col?:string;size?:number})=>(<div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:"9px 11px"}}><div style={{fontSize:9,color:C.sec,fontWeight:600,textTransform:"uppercase",letterSpacing:.5,marginBottom:3,fontFamily:F}}>{label}</div><div style={{fontSize:size,fontWeight:700,color:col||C.navy,fontVariantNumeric:"tabular-nums",fontFamily:F}}>{val}</div></div>);
 
@@ -806,8 +857,17 @@ function SummaryUW({i,c,deal}){
         <FR label="Remaining Equity" val={fmt$(c.sel.remEq)} stripe/><FR label="Annual NCF" val={fmt$(c.sel.ancf)}/><FR label="Return on Equity" val={fmtP(c.sel.roe)} stripe/><FR label="Years to Recoup" val={c.sel.ytr?c.sel.ytr.toFixed(1)+"yr":"—"}/>
       </tbody></table></Pad></Crd>
       <Crd mb={0}><NB ch="Flip Exit"/><Pad><table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
-        <FR label="Sale Price" val={fmt$(c.sp)} stripe/><FR label="Net Sale Price" val={fmt$(c.nsp)} bold/><FR label="Bridge Payoff" val={fmt$(-c.bpOff)} col={C.bad} stripe/>
-        <FR label="Total Cost Basis" val={fmt$(-c.tcb)} col={C.bad}/><FR label="Net Profit" val={fmt$(c.profit)} bold col={c.profit>0?C.ok:C.bad} stripe/><FR label="ROE" val={fmtP(c.froe)}/>
+        <FR label="Sale Price" val={fmt$(c.sp)} stripe/>
+        {c.conc>0&&<FR label="Concessions" val={fmt$(-c.conc)} col={C.bad}/>}
+        {c.bkrF>0&&<FR label="Broker Fee" val={fmt$(-c.bkrF)} col={C.bad} stripe/>}
+        {c.addlI>0&&<FR label="Addl. Bridge Interest" val={fmt$(-c.addlI)} col={C.bad}/>}
+        {c.sellerDebitAtSale>0&&<FR label="Tax Proration Debit" val={fmt$(-c.sellerDebitAtSale)} col={C.bad} stripe/>}
+        {c.exitClosingCosts>0&&<FR label="Exit Closing Costs" val={fmt$(-c.exitClosingCosts)} col={C.bad}/>}
+        <FR label="Net Sale Price" val={fmt$(c.nsp)} bold stripe/>
+        <FR label="Bridge Payoff" val={fmt$(-c.bpOff)} col={C.bad}/>
+        <FR label="Total Cost Basis" val={fmt$(-c.tcb)} col={C.bad} stripe/>
+        <FR label="Net Profit" val={fmt$(c.profit)} bold col={c.profit>0?C.ok:C.bad}/>
+        <FR label="ROE" val={fmtP(c.froe)} stripe/>
       </tbody></table></Pad></Crd>
     </div>
     <Crd><NB ch="Sources & Uses"/>
@@ -1116,8 +1176,20 @@ function ExitTab({i,c,deal,acqDateOverride}){
         <tbody>{[["LTV",d=>fmtP(d.ltv)],["Loan",d=>fmt$(d.loan)],["Rate",d=>fmtP(d.rate)],["Total Closing",d=>fmt$(d.tcc),"bold"],["Annual Payment",d=>fmt$(d.aPmt)],["DSCR",d=>fmtX(d.dscr),"bold",d=>d.ok?C.ok:C.bad],["DSCR Pass?",d=>d.ok?"Pass":"Fail","",d=>d.ok?C.ok:C.bad],["Cash Out",d=>fmt$(d.co),"bold",d=>d.co>0?C.ok:C.bad],["Remaining Equity",d=>fmt$(d.remEq)],["Annual NCF",d=>fmt$(d.ancf)],["Return on Equity",d=>fmtP(d.roe)],["Years to Recoup",d=>d.ytr?d.ytr.toFixed(1)+"yr":"—"]].map(([label,fn,bold,colFn],ri)=>(<tr key={label} style={{background:ri%2===0?C.white:C.bg}}><td style={tdS(C.pri,bold==="bold")}>{label}</td>{c.dscrExits.map(d=><td key={d.name} style={tdS(colFn?colFn(d):null,bold==="bold",true)}>{fn(d)}</td>)}</tr>))}</tbody>
       </table>
     </div></Crd>
-    <Crd><NB ch="Flip Exit"/><Pad><table style={{width:"100%",borderCollapse:"collapse",maxWidth:380}}><tbody>
-      {[["Sale Price",fmt$(c.sp)],["Net Sale Price",fmt$(c.nsp),null,"bold"],["Bridge Payoff",fmt$(-c.bpOff),C.bad],["Total Cost Basis",fmt$(-c.tcb),C.bad],["Net Profit",fmt$(c.profit),c.profit>0?C.ok:C.bad,"bold"],["ROE",fmtP(c.froe)]].map(([l,v,col,b],ri)=>(<tr key={l} style={{background:ri%2===0?C.white:C.bg}}><td style={tdS(C.pri,b==="bold")}>{l}</td><td style={tdS(col||C.pri,b==="bold",true)}>{v}</td></tr>))}
+    <Crd><NB ch="Flip Exit"/><Pad><table style={{width:"100%",borderCollapse:"collapse",maxWidth:420}}><tbody>
+      {[
+        ["Sale Price",fmt$(c.sp)],
+        ...(c.conc>0?[["Concessions",fmt$(-c.conc),C.bad]]:[]),
+        ...(c.bkrF>0?[["Broker Fee",fmt$(-c.bkrF),C.bad]]:[]),
+        ...(c.addlI>0?[["Addl. Bridge Interest",fmt$(-c.addlI),C.bad]]:[]),
+        ...(c.sellerDebitAtSale>0?[["Tax Proration Debit",fmt$(-c.sellerDebitAtSale),C.bad]]:[]),
+        ...(c.exitClosingCosts>0?[["Exit Closing Costs",fmt$(-c.exitClosingCosts),C.bad]]:[]),
+        ["Net Sale Price",fmt$(c.nsp),null,"bold"],
+        ["Bridge Payoff",fmt$(-c.bpOff),C.bad],
+        ["Total Cost Basis",fmt$(-c.tcb),C.bad],
+        ["Net Profit",fmt$(c.profit),c.profit>0?C.ok:C.bad,"bold"],
+        ["ROE",fmtP(c.froe)],
+      ].map(([l,v,col,b],ri)=>(<tr key={l} style={{background:ri%2===0?C.white:C.bg}}><td style={tdS(C.pri,b==="bold")}>{l}</td><td style={tdS(col||C.pri,b==="bold",true)}>{v}</td></tr>))}
     </tbody></table></Pad></Crd>
     {/* ── ARV Sensitivity Analysis ±5% / ±10% / ±15% ── */}
     <Crd><NB ch="ARV Sensitivity Analysis (±5% / ±10% / ±15%)"/><Pad>
@@ -1540,7 +1612,7 @@ function AssumptionsTab({i,si}){
             <div/>
             {ldr.bands.map((b,bi)=>(<Fragment key={bi}>
               <div style={{color:C.navy,fontWeight:700,fontFamily:F,fontSize:9,padding:"3px 0"}}>{letters[bi]||String(bi+1)}</div>
-              {[["ltc",b.ltc,1],["ltv",b.ltv,1],["orig",b.orig,2],["rate",b.rate,2]].map(([k,v,dp])=>(<input key={k} type="number" step={dp===2?"0.01":"0.1"} value={(v*100).toFixed(dp)} onChange={e=>updBand(li,bi,k,parseFloat(e.target.value)/100)} style={{...INP,textAlign:"right",padding:"3px 6px"}}/>))}
+              {[["ltc",b.ltc,1],["ltv",b.ltv,1],["orig",b.orig,2],["rate",b.rate,2]].map(([k,v,dp])=>(<PctInput key={k} value={v} decimals={dp} step={dp===2?0.01:0.1} onChange={n=>updBand(li,bi,k,n)} style={{...INP,textAlign:"right",padding:"3px 6px"}}/>))}
               <div style={{textAlign:"center"}}>{ldr.bands.length>1&&<button onClick={()=>delBand(bi)} title="Remove band" style={{background:"none",border:"none",color:C.bad,cursor:"pointer",fontSize:12,padding:"0 4px"}}>×</button>}</div>
             </Fragment>))}
           </div>
@@ -1559,10 +1631,13 @@ function AssumptionsTab({i,si}){
       <Fl label="Misc. Operating Expenses ($/yr)"><input type="number" value={i.miscOpEx||0} onChange={e=>upd("miscOpEx",e.target.value)} style={INP}/></Fl>
     </div></Crd>
     <Crd><NB ch="Flip Exit"/><div style={gr(4)}>
-      <Fl label="Sale Price (0=ARV)"><input type="number" value={i.flipSalePrice||0} onChange={e=>upd("flipSalePrice",e.target.value)} style={INP}/></Fl>
+      <Fl label="Sale Price (defaults to ARV)"><input type="number" value={i.flipSalePrice||""} onChange={e=>upd("flipSalePrice",e.target.value)} placeholder={num(i.arv)?fmt$(num(i.arv)):"Enter ARV first"} style={INP}/></Fl>
       <Fl label="Addl. Months Interest"><input type="number" value={i.addlMonthsInterest} onChange={e=>upd("addlMonthsInterest",e.target.value)} style={INP}/></Fl>
       <Fl label="Concession %"><input type="number" step=".5" value={(num(i.concessionPct)*100).toFixed(1)} onChange={e=>upd("concessionPct",parseFloat(e.target.value)/100)} style={INP}/></Fl>
       <Fl label="Broker Fee %"><input type="number" step=".5" value={(num(i.brokerFeePct)*100).toFixed(1)} onChange={e=>upd("brokerFeePct",parseFloat(e.target.value)/100)} style={INP}/></Fl>
+      <Fl label="Exit Title / Escrow ($)"><input type="number" value={i.flipExitTitle||0} onChange={e=>upd("flipExitTitle",e.target.value)} style={INP}/></Fl>
+      <Fl label="Exit Recording / Transfer ($)"><input type="number" value={i.flipExitRecording||0} onChange={e=>upd("flipExitRecording",e.target.value)} style={INP}/></Fl>
+      <Fl label="Exit Misc Closing ($)"><input type="number" value={i.flipExitMisc||0} onChange={e=>upd("flipExitMisc",e.target.value)} style={INP}/></Fl>
     </div></Crd>
     <Crd><NB ch="DSCR Exit Lenders" act={<button onClick={()=>si(p=>{
       const last=p.dscrLenders[p.dscrLenders.length-1]||{ltv:.70,rate:.075,amort:30,orig:.02,servicingFee:0,appraisal:600,thirdParty:300,title:1500};
@@ -1573,8 +1648,13 @@ function AssumptionsTab({i,si}){
         <tbody>{i.dscrLenders.map((ld,idx)=>(<tr key={idx} style={{background:idx%2===0?C.white:C.bg}}>
           <td style={{...tdS(C.sec),fontSize:9}}>{idx+1}{idx===num(i.selectedDSCRLender)-1?" *":""}</td>
           <td style={tdS()}><input value={ld.name} onChange={e=>updDSCR(idx,"name",e.target.value)} style={{...INP,width:115}}/></td>
-          {[["ltv",ld.ltv*100,2],["rate",ld.rate*100,3],["amort",ld.amort,0]].map(([k,v,dp])=>(<td key={k} style={tdS(null,false,true)}><input type="number" step={dp===0?1:.01} value={v.toFixed(dp)} onChange={e=>updDSCR(idx,k,k==="amort"?parseFloat(e.target.value):parseFloat(e.target.value)/100)} style={{...INP,width:58,textAlign:"right"}}/></td>))}
-          {[["orig",ld.orig*100,2],["servicingFee",ld.servicingFee,0],["appraisal",ld.appraisal,0],["thirdParty",ld.thirdParty,0],["title",ld.title,0]].map(([k,v,dp])=>(<td key={k} style={tdS(null,false,true)}><input type="number" step={dp===0?50:.01} value={typeof v==="number"?v.toFixed(dp):v} onChange={e=>updDSCR(idx,k,k==="orig"?parseFloat(e.target.value)/100:parseFloat(e.target.value))} style={{...INP,width:68,textAlign:"right"}}/></td>))}
+          {/* LTV and Rate are stored as decimals (0.075 = 7.5%); Amort is a plain number of years */}
+          <td style={tdS(null,false,true)}><PctInput value={ld.ltv} decimals={2} step={0.01} onChange={n=>updDSCR(idx,"ltv",n)} style={{...INP,width:58,textAlign:"right"}}/></td>
+          <td style={tdS(null,false,true)}><PctInput value={ld.rate} decimals={3} step={0.001} onChange={n=>updDSCR(idx,"rate",n)} style={{...INP,width:58,textAlign:"right"}}/></td>
+          <td style={tdS(null,false,true)}><NumInput value={ld.amort} decimals={0} step={1} onChange={n=>updDSCR(idx,"amort",n)} style={{...INP,width:58,textAlign:"right"}}/></td>
+          {/* Orig is a percent decimal; the rest are plain dollar amounts */}
+          <td style={tdS(null,false,true)}><PctInput value={ld.orig} decimals={2} step={0.01} onChange={n=>updDSCR(idx,"orig",n)} style={{...INP,width:68,textAlign:"right"}}/></td>
+          {[["servicingFee",ld.servicingFee],["appraisal",ld.appraisal],["thirdParty",ld.thirdParty],["title",ld.title]].map(([k,v])=>(<td key={k} style={tdS(null,false,true)}><NumInput value={v} decimals={0} step={50} onChange={n=>updDSCR(idx,k,n)} style={{...INP,width:68,textAlign:"right"}}/></td>))}
           <td style={{padding:"2px 6px",textAlign:"center"}}>{i.dscrLenders.length>1&&<button onClick={()=>si(p=>({...p,dscrLenders:p.dscrLenders.filter((_,x)=>x!==idx)}))} title="Remove lender" style={{background:"none",border:"none",color:C.bad,cursor:"pointer",fontSize:13}}>×</button>}</td>
         </tr>))}</tbody>
       </table>
