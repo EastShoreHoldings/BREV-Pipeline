@@ -756,11 +756,26 @@ function SummaryUW({i,c,deal}){
   const p1=i.partner1Name||"Boris",p2=i.partner2Name||"Jon";
   const ut=(i.unit_mix||[]).filter(u=>u.count&&u.beds&&u.baths);
 
-  // Tax proration — pull acquisition date from the deal's stage timestamps.
-  // Prefer dateClosed (actual close) > dateContract (under-contract projection)
-  // > today. Exit date is acquisition + (projectDuration + addlMonthsInterest)
-  // months, which approximates the bridge-loan payoff / sale-close window.
-  const acqDate=deal?.dateClosed||deal?.dateContract||(new Date().toISOString().slice(0,10));
+  // Tax proration — figure out the acquisition date and label its source so the
+  // user knows whether the proration is based on actual data or a projection.
+  // Hierarchy: dateClosed (actual close) > dateContract (under-contract estimate)
+  // > dateLOI (LOI-stage estimate) > today (prospecting / analysis stage).
+  // The user can override on the card itself to model what-if scenarios.
+  const acqAuto=deal?.dateClosed?{date:deal.dateClosed,source:"actual"}
+              :deal?.dateContract?{date:deal.dateContract,source:"contract"}
+              :deal?.dateLOI?{date:deal.dateLOI,source:"loi"}
+              :{date:new Date().toISOString().slice(0,10),source:"today"};
+  const [acqOverride,setAcqOverride]=useState("");
+  const acqDate=acqOverride||acqAuto.date;
+  const acqSource=acqOverride?"override":acqAuto.source;
+  const acqSourceLabel={
+    actual:"Actual close date",
+    contract:"From under-contract date",
+    loi:"From LOI date — estimated",
+    today:"Pre-contract — estimated as today",
+    override:"Manual override",
+  }[acqSource];
+  const acqSourceColor=acqSource==="actual"?C.ok:acqSource==="contract"?C.accent:acqSource==="override"?C.navy:C.gold;
   const monthsToExit=num(i.projectDuration)+num(i.addlMonthsInterest);
   const exitDateObj=acqDate?(()=>{const d=new Date(acqDate);d.setMonth(d.getMonth()+monthsToExit);return d;})():null;
   const exitDateStr=exitDateObj?exitDateObj.toISOString().slice(0,10):null;
@@ -812,7 +827,16 @@ function SummaryUW({i,c,deal}){
         const fmtD=(s)=>{if(!s)return"—";const d=new Date(s);return isNaN(d)?s:d.toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});};
         const isFlip=tp.isFlipExit;
         const isBRRRR=tp.strategy==="BRRRR";
+        const isEstimate=acqSource==="today"||acqSource==="loi";
         return(<Fragment>
+          {/* Date source banner — tells the user whether the proration is grounded in
+              actual data or projected from an early-stage date. */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"7px 10px",background:isEstimate?"#fef3c7":(acqSource==="actual"?"#f0fdf4":C.bg),border:`1px solid ${acqSourceColor}40`,borderRadius:5,flexWrap:"wrap"}}>
+            <span style={{fontSize:9,fontWeight:700,color:acqSourceColor,textTransform:"uppercase",letterSpacing:.5,fontFamily:F}}>{acqSourceLabel}</span>
+            <span style={{fontSize:10,color:C.sec,fontFamily:F}}>{isEstimate?"This deal isn't under contract yet — proration is a what-if based on the date below. Override anytime.":"Override:"}</span>
+            <input type="date" value={acqOverride} onChange={e=>setAcqOverride(e.target.value)} style={{...INP,width:140,padding:"3px 6px",fontSize:10}}/>
+            {acqOverride&&<button onClick={()=>setAcqOverride("")} style={{background:"transparent",color:C.sec,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:F}}>↺ Reset to {acqAuto.source==="today"?"today":fmtD(acqAuto.date)}</button>}
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
             <Met label="Annual Tax" val={fmt$(tp.annualTax)} col={C.navy}/>
             <Met label="Acquisition Date" val={fmtD(tp.acqDate)}/>
