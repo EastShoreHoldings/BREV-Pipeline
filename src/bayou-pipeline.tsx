@@ -390,7 +390,7 @@ function computeTaxProration(annualTax,acqDateStr,exitDateStr,strategy){
 }
 
 
-function computeAll(i){
+function computeAll(i,deal,acqDateOverride){
   const matSub=i.budget.reduce((s,c)=>s+c.items.reduce((ss,it)=>ss+num(it.uc)*num(it.qty),0),0);
   const labB=num(i.laborBudget),contAmt=(matSub+labB)*num(i.contingencyPct);
   const constr=matSub+labB+contAmt;
@@ -404,9 +404,29 @@ function computeAll(i){
   const cEscrow=i.useBridge?constr:0,debtClose=pLoan-cEscrow;
   const pFee=i.useBridge?num(i.processingFee):0;
   const title=i.useBridge?num(i.titleBridge):num(i.titleNoBridge);
+
+  // ─── Property Tax Proration ─────────────────────────────────────────────
+  // Louisiana: taxes paid in arrears. cc keeps annualTaxes (Year-1 obligation
+  // baked into the basis). Then we apply two adjustments:
+  //   - sellerCreditAtAcq → reduces cashReq (HUD line: seller credits buyer)
+  //   - sellerDebitAtSale → reduces nsp (HUD line: seller credits buyer at sale)
+  //   - cross-year holds → add (fullYearsCrossed-1) × annualTax to tcb because
+  //     each Dec-31-crossed adds a separate annual bill the owner of record pays.
+  const acqDateAuto=deal?.dateClosed||deal?.dateContract||deal?.dateLOI||(new Date().toISOString().slice(0,10));
+  const acqDate=acqDateOverride||acqDateAuto;
+  const monthsToExit=num(i.projectDuration)+num(i.addlMonthsInterest);
+  const exitDate=(()=>{const d=new Date(acqDate);if(isNaN(d.getTime()))return null;d.setMonth(d.getMonth()+monthsToExit);return d.toISOString().slice(0,10);})();
+  const taxProration=computeTaxProration(i.annualTaxes,acqDate,exitDate,deal?.deal_type||"Flip");
+  const sellerCreditAtAcq=taxProration?taxProration.sellerCreditAtAcq:0;
+  const sellerDebitAtSale=taxProration?(taxProration.sellerDebitAtSale||0):0;
+  const extraYearTaxBills=taxProration&&taxProration.crossesYear?Math.max(0,taxProration.fullYearsCrossed-1)*taxProration.annualTax:0;
+
   const cc=num(i.appraisal)+num(i.inspection)+num(i.lenderLegal)+pFee+num(i.miscClosing)+title+num(i.floodInsurance)+num(i.insurance12Mo)+num(i.annualTaxes);
-  const tcb=acq+constr+cc+num(i.miscOther)+finFees+intCost;
-  const cashReq=i.useBridge?(tcb-constr)-debtClose-intCost:tcb;
+  // tcb includes any additional annual tax bills paid during a multi-year hold.
+  const tcb=acq+constr+cc+num(i.miscOther)+finFees+intCost+extraYearTaxBills;
+  // cashReq is reduced by the seller's acquisition-side credit (less out-of-pocket at HUD).
+  const cashReqRaw=i.useBridge?(tcb-constr)-debtClose-intCost:tcb;
+  const cashReq=cashReqRaw-sellerCreditAtAcq;
   const intRes=intCost,totalCash=cashReq+intRes;
   const mRent=i.rentRoll.reduce((s,u)=>s+num(u.projRent),0);
   const aRents=mRent*12,units=Math.max(1,num(i.units));
@@ -430,7 +450,10 @@ function computeAll(i){
   const sp=num(i.flipSalePrice)||arv;
   const addlI=i.useBridge?num(i.addlMonthsInterest)*(pLoan*ab.rate/12):0;
   const conc=num(i.concessionPct)*sp,bkrF=num(i.brokerFeePct)*sp;
-  const nsp=sp-addlI-conc-bkrF,bpOff=i.useBridge?pLoan:0;
+  // Net Sale Price subtracts the buyer-side tax credit owed at sale closing
+  // (seller's debit per LA proration). Only applies on actual transfers — not
+  // on BRRRR refinances.
+  const nsp=sp-addlI-conc-bkrF-sellerDebitAtSale,bpOff=i.useBridge?pLoan:0;
   const fnp=nsp-bpOff,profit=nsp-tcb,froe=totalCash>0?profit/totalCash:0;
   let wf={};const capInv=totalCash;
   if(i.capitalSource==="Outside"){
@@ -483,7 +506,8 @@ function computeAll(i){
     wfF.var=Math.round(fnp-fB-fJ);
     wf={type:"Sponsor",d:wfD,f:wfF};
   }
-  return {constr,matSub,contAmt,pLoan,finFees,intCost,cEscrow,debtClose,ltcAch:(acq+constr)>0?pLoan/(acq+constr):0,ltvAch:arv>0?pLoan/arv:0,cc,tcb,cashReq,intRes,totalCash,mRent,aRents,opTax,opIns,opWS,opRep,opMgmt,opMisc,totOpEx,noi,yoc,dscrExits,sel,sp,addlI,conc,bkrF,nsp,bpOff,fnp,profit,froe,wf,capInv,ab,li,bi};
+  return {constr,matSub,contAmt,pLoan,finFees,intCost,cEscrow,debtClose,ltcAch:(acq+constr)>0?pLoan/(acq+constr):0,ltvAch:arv>0?pLoan/arv:0,cc,tcb,cashReq,intRes,totalCash,mRent,aRents,opTax,opIns,opWS,opRep,opMgmt,opMisc,totOpEx,noi,yoc,dscrExits,sel,sp,addlI,conc,bkrF,nsp,bpOff,fnp,profit,froe,wf,capInv,ab,li,bi,
+    taxProration,sellerCreditAtAcq,sellerDebitAtSale,extraYearTaxBills};
 }
 
 // ── Shared UI primitives ───────────────────────────────────────────────────
@@ -755,31 +779,10 @@ function UWFlags({data,i}){
 function SummaryUW({i,c,deal}){
   const p1=i.partner1Name||"Boris",p2=i.partner2Name||"Jon";
   const ut=(i.unit_mix||[]).filter(u=>u.count&&u.beds&&u.baths);
-
-  // Tax proration — figure out the acquisition date and label its source so the
-  // user knows whether the proration is based on actual data or a projection.
-  // Hierarchy: dateClosed (actual close) > dateContract (under-contract estimate)
-  // > dateLOI (LOI-stage estimate) > today (prospecting / analysis stage).
-  // The user can override on the card itself to model what-if scenarios.
-  const acqAuto=deal?.dateClosed?{date:deal.dateClosed,source:"actual"}
-              :deal?.dateContract?{date:deal.dateContract,source:"contract"}
-              :deal?.dateLOI?{date:deal.dateLOI,source:"loi"}
-              :{date:new Date().toISOString().slice(0,10),source:"today"};
-  const [acqOverride,setAcqOverride]=useState("");
-  const acqDate=acqOverride||acqAuto.date;
-  const acqSource=acqOverride?"override":acqAuto.source;
-  const acqSourceLabel={
-    actual:"Actual close date",
-    contract:"From under-contract date",
-    loi:"From LOI date — estimated",
-    today:"Pre-contract — estimated as today",
-    override:"Manual override",
-  }[acqSource];
-  const acqSourceColor=acqSource==="actual"?C.ok:acqSource==="contract"?C.accent:acqSource==="override"?C.navy:C.gold;
-  const monthsToExit=num(i.projectDuration)+num(i.addlMonthsInterest);
-  const exitDateObj=acqDate?(()=>{const d=new Date(acqDate);d.setMonth(d.getMonth()+monthsToExit);return d;})():null;
-  const exitDateStr=exitDateObj?exitDateObj.toISOString().slice(0,10):null;
-  const taxProration=computeTaxProration(i.annualTaxes,acqDate,exitDateStr,deal?.deal_type||"Flip");
+  // Tax proration is now computed inside computeAll and lives on c.taxProration
+  // so it's already reflected in c.tcb, c.cashReq, and c.profit. The detailed
+  // proration card moved to the Underwriting tab; here on Summary we just show
+  // a one-line summary inside Sources & Uses.
   return(<div>
     <Crd><NB ch="Property Overview"/><Pad>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
@@ -809,8 +812,20 @@ function SummaryUW({i,c,deal}){
     </div>
     <Crd><NB ch="Sources & Uses"/>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr"}}>
-        {[{label:"Uses",rows:[["Acquisition",i.acquisitionPrice],["Construction",c.constr],["Closing Costs",c.cc],["Financing Fees",c.finFees],["Interest Cost",c.intCost]],total:["Total Uses",c.tcb]},
-          {label:"Sources",rows:[["Bridge Loan",c.pLoan],["Cash at Settlement",c.cashReq],["Interest Reserve",c.intRes]],total:["Total Sources",c.pLoan+c.totalCash]}
+        {[{label:"Uses",rows:[
+            ["Acquisition",i.acquisitionPrice],
+            ["Construction",c.constr],
+            ["Closing Costs",c.cc],
+            ["Financing Fees",c.finFees],
+            ["Interest Cost",c.intCost],
+            ...(c.extraYearTaxBills>0?[["Additional Tax Bills (cross-year)",c.extraYearTaxBills]]:[]),
+          ],total:["Total Uses",c.tcb]},
+          {label:"Sources",rows:[
+            ["Bridge Loan",c.pLoan],
+            ["Cash at Settlement",c.cashReq],
+            ["Interest Reserve",c.intRes],
+            ...(c.sellerCreditAtAcq>0?[["Seller Tax Credit at Close",c.sellerCreditAtAcq]]:[]),
+          ],total:["Total Sources",c.pLoan+c.totalCash+(c.sellerCreditAtAcq||0)]}
         ].map(({label,rows,total},gi)=>(<div key={label} style={{borderRight:gi===0?`1px solid ${C.border}`:"none"}}>
           <div style={{background:C.lb,padding:"4px 10px",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:9,fontWeight:700,color:C.navy,textTransform:"uppercase",letterSpacing:.5,fontFamily:F}}>{label}</span></div>
           <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
@@ -820,61 +835,6 @@ function SummaryUW({i,c,deal}){
         </div>))}
       </div>
     </Crd>
-    {/* Property Tax Proration — Louisiana arrears convention */}
-    {taxProration&&<Crd><NB ch="Property Tax Proration"/><Pad>
-      {(()=>{
-        const tp=taxProration;
-        const fmtD=(s)=>{if(!s)return"—";const d=new Date(s);return isNaN(d)?s:d.toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});};
-        const isFlip=tp.isFlipExit;
-        const isBRRRR=tp.strategy==="BRRRR";
-        const isEstimate=acqSource==="today"||acqSource==="loi";
-        return(<Fragment>
-          {/* Date source banner — tells the user whether the proration is grounded in
-              actual data or projected from an early-stage date. */}
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"7px 10px",background:isEstimate?"#fef3c7":(acqSource==="actual"?"#f0fdf4":C.bg),border:`1px solid ${acqSourceColor}40`,borderRadius:5,flexWrap:"wrap"}}>
-            <span style={{fontSize:9,fontWeight:700,color:acqSourceColor,textTransform:"uppercase",letterSpacing:.5,fontFamily:F}}>{acqSourceLabel}</span>
-            <span style={{fontSize:10,color:C.sec,fontFamily:F}}>{isEstimate?"This deal isn't under contract yet — proration is a what-if based on the date below. Override anytime.":"Override:"}</span>
-            <input type="date" value={acqOverride} onChange={e=>setAcqOverride(e.target.value)} style={{...INP,width:140,padding:"3px 6px",fontSize:10}}/>
-            {acqOverride&&<button onClick={()=>setAcqOverride("")} style={{background:"transparent",color:C.sec,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:F}}>↺ Reset to {acqAuto.source==="today"?"today":fmtD(acqAuto.date)}</button>}
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
-            <Met label="Annual Tax" val={fmt$(tp.annualTax)} col={C.navy}/>
-            <Met label="Acquisition Date" val={fmtD(tp.acqDate)}/>
-            <Met label="Days in Seller Period" val={tp.daysInSellerPeriodAtAcq+" / "+tp.acqDaysInYear}/>
-            <Met label="Seller Credit at Close" val={fmt$(tp.sellerCreditAtAcq)} col={C.ok}/>
-          </div>
-          {isFlip&&tp.exitDate&&<Fragment>
-            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginBottom:10}}>
-              <div style={{fontSize:9,fontWeight:700,color:C.sec,textTransform:"uppercase",letterSpacing:.5,fontFamily:F,marginBottom:6}}>Sale-Side ({tp.strategy} Exit)</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
-                <Met label="Projected Sale Date" val={fmtD(tp.exitDate)}/>
-                <Met label="Days Held" val={(tp.daysHeld||0)+" days"}/>
-                <Met label="Days in Seller Period (Sale)" val={(tp.daysInSellerPeriodAtSale||0)+" days"}/>
-                <Met label="Seller Debit at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad}/>
-              </div>
-            </div>
-            <Crd mb={0}><Pad>
-              <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
-                <FR label="Seller Credit Received at Acquisition" val={fmt$(-tp.sellerCreditAtAcq)} col={C.ok} stripe/>
-                {tp.crossesYear&&<FR label={`Annual Tax Bill Paid (${tp.fullYearsCrossed} year${tp.fullYearsCrossed===1?"":"s"} crossed Dec 31)`} val={fmt$(tp.fullYearsCrossed*tp.annualTax)} col={C.bad}/>}
-                <FR label="Seller Debit Owed at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad} stripe/>
-                <tr style={{background:C.lb}}>
-                  <td style={tdS(C.navy,true)}>Net Tax Cost Over Hold</td>
-                  <td style={tdS(num(tp.netTaxOverHold)>0?C.bad:C.ok,true,true)}>{fmt$(num(tp.netTaxOverHold))}</td>
-                </tr>
-              </tbody></table>
-            </Pad></Crd>
-            {tp.crossesYear&&<div style={{marginTop:8,padding:"7px 10px",background:"#fef3c7",border:`1px solid ${C.gold}`,borderRadius:5,fontSize:9,color:C.gold,fontFamily:F,lineHeight:1.5,fontWeight:600}}>⚠ Hold crosses Dec 31. As owner of record on the bill date, you'll pay the full annual tax bill in December — model this as a Year-1 cash outflow. The Net Tax Cost above already accounts for it.</div>}
-          </Fragment>}
-          {isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
-            <strong style={{color:C.navy}}>BRRRR refi:</strong> a refinance is not a transfer of ownership, so no proration occurs at refi. Taxes accrue at <strong>{fmt$(tp.annualTax)}/yr</strong> as an operating expense from acquisition forward. The {fmt$(tp.sellerCreditAtAcq)} acquisition credit offsets your Year-1 partial responsibility.
-          </div>}
-          {!isFlip&&!isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
-            <strong style={{color:C.navy}}>Long-term hold:</strong> the {fmt$(tp.sellerCreditAtAcq)} credit at close offsets your Year-1 partial responsibility. From Year 2 onward, taxes flow into the rental pro forma at the full annual rate ({fmt$(tp.annualTax)}/yr).
-          </div>}
-        </Fragment>);
-      })()}
-    </Pad></Crd>}
     <Crd><NB ch={"Fund Distribution — "+c.wf.type+" Capital"}>
       </NB>
       {/* Equity trap warning banner — DSCR Sponsor mode only */}
@@ -961,10 +921,30 @@ function SummaryUW({i,c,deal}){
   </div>);
 }
 
-function UWDetailTab({i,c}){
+function UWDetailTab({i,c,deal,acqDateOverride,setAcqDateOverride}){
   const sf=num(i.sqft)||1,u=Math.max(1,num(i.units));
   const pct=v=>c.tcb>0?fmtP(v/c.tcb):"—";
   const ldr=i.bridgeMatrix[c.li],band=ldr.bands[c.bi];
+
+  // Tax proration card metadata. computeAll already produced the numbers in
+  // c.taxProration (used in c.tcb / c.cashReq / c.profit). Here we just label
+  // which date source was used so the user knows whether the proration is
+  // backed by actual stage data or a projection.
+  const tp=c.taxProration;
+  const acqAuto=deal?.dateClosed?{date:deal.dateClosed,source:"actual"}
+              :deal?.dateContract?{date:deal.dateContract,source:"contract"}
+              :deal?.dateLOI?{date:deal.dateLOI,source:"loi"}
+              :{date:new Date().toISOString().slice(0,10),source:"today"};
+  const acqSource=acqDateOverride?"override":acqAuto.source;
+  const acqSourceLabel={
+    actual:"Actual close date",
+    contract:"From under-contract date",
+    loi:"From LOI date — estimated",
+    today:"Pre-contract — estimated as today",
+    override:"Manual override",
+  }[acqSource];
+  const acqSourceColor=acqSource==="actual"?C.ok:acqSource==="contract"?C.accent:acqSource==="override"?C.navy:C.gold;
+  const fmtD=(s)=>{if(!s)return"—";const d=new Date(s);return isNaN(d)?s:d.toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});};
   return(<div>
     <Crd><NB ch="Uses — Cost Basis"/><div style={{overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -992,6 +972,59 @@ function UWDetailTab({i,c}){
         </tbody>
       </table></Pad></Crd>
     </div>
+    {/* ── Property Tax Proration ────────────────────────────────────────── */}
+    {tp&&<Crd><NB ch="Property Tax Proration"/><Pad>
+      {(()=>{
+        const isFlip=tp.isFlipExit;
+        const isBRRRR=tp.strategy==="BRRRR";
+        const isEstimate=acqSource==="today"||acqSource==="loi";
+        return(<Fragment>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"7px 10px",background:isEstimate?"#fef3c7":(acqSource==="actual"?"#f0fdf4":C.bg),border:`1px solid ${acqSourceColor}40`,borderRadius:5,flexWrap:"wrap"}}>
+            <span style={{fontSize:9,fontWeight:700,color:acqSourceColor,textTransform:"uppercase",letterSpacing:.5,fontFamily:F}}>{acqSourceLabel}</span>
+            <span style={{fontSize:10,color:C.sec,fontFamily:F}}>{isEstimate?"Pre-contract — proration is a what-if based on the date below. Override anytime.":"Override:"}</span>
+            <input type="date" value={acqDateOverride||""} onChange={e=>setAcqDateOverride(e.target.value)} style={{...INP,width:140,padding:"3px 6px",fontSize:10}}/>
+            {acqDateOverride&&<button onClick={()=>setAcqDateOverride("")} style={{background:"transparent",color:C.sec,border:`1px solid ${C.border}`,borderRadius:3,padding:"2px 8px",fontSize:9,fontWeight:600,cursor:"pointer",fontFamily:F}}>↺ Reset to {acqAuto.source==="today"?"today":fmtD(acqAuto.date)}</button>}
+            <span style={{flex:1}}/>
+            <span style={{fontSize:9,color:C.sec,fontFamily:F,fontStyle:"italic"}}>Live in TCB · Cash Required · Profit</span>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
+            <Met label="Annual Tax" val={fmt$(tp.annualTax)} col={C.navy}/>
+            <Met label="Acquisition Date" val={fmtD(tp.acqDate)}/>
+            <Met label="Days in Seller Period" val={tp.daysInSellerPeriodAtAcq+" / "+tp.acqDaysInYear}/>
+            <Met label="Seller Credit at Close" val={fmt$(tp.sellerCreditAtAcq)} col={C.ok}/>
+          </div>
+          {isFlip&&tp.exitDate&&<Fragment>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginBottom:10}}>
+              <div style={{fontSize:9,fontWeight:700,color:C.sec,textTransform:"uppercase",letterSpacing:.5,fontFamily:F,marginBottom:6}}>Sale-Side ({tp.strategy} Exit)</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                <Met label="Projected Sale Date" val={fmtD(tp.exitDate)}/>
+                <Met label="Days Held" val={(tp.daysHeld||0)+" days"}/>
+                <Met label="Days in Seller Period (Sale)" val={(tp.daysInSellerPeriodAtSale||0)+" days"}/>
+                <Met label="Seller Debit at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad}/>
+              </div>
+            </div>
+            <Crd mb={0}><Pad>
+              <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
+                <FR label="Seller Credit Received at Acquisition" val={fmt$(-tp.sellerCreditAtAcq)} col={C.ok} stripe/>
+                {tp.crossesYear&&<FR label={`Annual Tax Bill Paid (${tp.fullYearsCrossed} year${tp.fullYearsCrossed===1?"":"s"} crossed Dec 31)`} val={fmt$(tp.fullYearsCrossed*tp.annualTax)} col={C.bad}/>}
+                <FR label="Seller Debit Owed at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad} stripe/>
+                <tr style={{background:C.lb}}>
+                  <td style={tdS(C.navy,true)}>Net Tax Cost Over Hold</td>
+                  <td style={tdS(num(tp.netTaxOverHold)>0?C.bad:C.ok,true,true)}>{fmt$(num(tp.netTaxOverHold))}</td>
+                </tr>
+              </tbody></table>
+            </Pad></Crd>
+            {tp.crossesYear&&<div style={{marginTop:8,padding:"7px 10px",background:"#fef3c7",border:`1px solid ${C.gold}`,borderRadius:5,fontSize:9,color:C.gold,fontFamily:F,lineHeight:1.5,fontWeight:600}}>⚠ Hold crosses Dec 31. Owner of record on the bill date pays the full annual tax bill in December — added to TCB above.</div>}
+          </Fragment>}
+          {isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
+            <strong style={{color:C.navy}}>BRRRR refi:</strong> a refinance is not a transfer of ownership, so no proration occurs at refi. Taxes accrue at <strong>{fmt$(tp.annualTax)}/yr</strong> as an operating expense from acquisition forward. The {fmt$(tp.sellerCreditAtAcq)} acquisition credit offsets your Year-1 partial responsibility.
+          </div>}
+          {!isFlip&&!isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
+            <strong style={{color:C.navy}}>Long-term hold:</strong> the {fmt$(tp.sellerCreditAtAcq)} credit at close offsets your Year-1 partial responsibility. From Year 2 onward, taxes flow into the rental pro forma at the full annual rate ({fmt$(tp.annualTax)}/yr).
+          </div>}
+        </Fragment>);
+      })()}
+    </Pad></Crd>}
   </div>);
 }
 
@@ -1075,7 +1108,7 @@ function RentRollTab({i,si}){
   </Crd>);
 }
 
-function ExitTab({i,c}){
+function ExitTab({i,c,deal,acqDateOverride}){
   return(<div>
     <Crd><NB ch="DSCR — Lender Comparison"/><div style={{overflowX:"auto"}}>
       <table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -1104,7 +1137,7 @@ function ExitTab({i,c}){
           const adjARV=Math.round(baseARV*(1+s.pct));
           const adjInputs={...i,arv:adjARV};
           if(!num(i.flipSalePrice)||num(i.flipSalePrice)===baseARV) adjInputs.flipSalePrice=adjARV;
-          const r=computeAll(adjInputs);
+          const r=computeAll(adjInputs,deal,acqDateOverride);
           return {label:s.label,pct:s.pct,arv:adjARV,tcb:r.tcb,profit:r.profit,froe:r.froe,noi:r.noi,dscr:r.sel.dscr,dscrOK:r.sel.ok,cashOut:r.sel.co,remEq:r.sel.remEq,roe:r.sel.roe,ancf:r.sel.ancf,ytr:r.sel.ytr,yoc:r.yoc,margin:adjARV>0?((adjARV-r.tcb)/adjARV*100):0};
         });
         const hdr={fontSize:9,fontWeight:700,color:C.navy,padding:"6px 8px",textTransform:"uppercase",letterSpacing:.4,textAlign:"right",whiteSpace:"nowrap",fontFamily:F,borderBottom:`2px solid ${C.border}`,background:C.lb};
@@ -1745,6 +1778,10 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
   const [saving,setSaving]=useState(false);
   const [justSaved,setJustSaved]=useState(false);
   const [exportCopied,setExportCopied]=useState(false);
+  // Acquisition-date override for tax proration. Lives at UWOverlay scope so
+  // computeAll, the Underwriting tab card, and the Summary all see the same
+  // value. Empty string = use the auto-derived date from deal stage stamps.
+  const [acqDateOverride,setAcqDateOverride]=useState("");
   const storageKey=`brev-acquisitions:${deal.id}`;
   const isDraft=!!deal.isDraft;
 
@@ -1765,7 +1802,7 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
 
   if(!uwInputs) return(<div style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:14,fontFamily:F}}>Loading underwriting model…</div></div>);
 
-  const c=computeAll(uwInputs);
+  const c=computeAll(uwInputs,deal,acqDateOverride);
 
   // ── Build v5.5 export payload ──────────────────────────────────
   const buildExportPayload=()=>{
@@ -1999,10 +2036,10 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
       {/* Content */}
       <div style={{padding:"16px 20px",maxHeight:"calc(100vh - 220px)",overflowY:"auto"}}>
         {uwTab==="Summary"&&<SummaryUW i={uwInputs} c={c} deal={deal}/>}
-        {uwTab==="Underwriting"&&<UWDetailTab i={uwInputs} c={c}/>}
+        {uwTab==="Underwriting"&&<UWDetailTab i={uwInputs} c={c} deal={deal} acqDateOverride={acqDateOverride} setAcqDateOverride={setAcqDateOverride}/>}
         {uwTab==="Budget"&&<BudgetTab i={uwInputs} si={si} c={c}/>}
         {uwTab==="Rent Roll"&&<RentRollTab i={uwInputs} si={si}/>}
-        {uwTab==="Exit Analysis"&&<ExitTab i={uwInputs} c={c}/>}
+        {uwTab==="Exit Analysis"&&<ExitTab i={uwInputs} c={c} deal={deal} acqDateOverride={acqDateOverride}/>}
         {uwTab==="Comparables"&&<CompsTab i={uwInputs} si={si}/>}
         {uwTab==="Demographics"&&<DemoTab i={uwInputs}/>}
         {uwTab==="Acquisition Flow"&&<AcquisitionFlowTab deal={deal} updateDeal={updateDeal} i={uwInputs} si={si} allDeals={allDeals}/>}
