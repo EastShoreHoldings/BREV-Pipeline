@@ -315,6 +315,81 @@ function defaultUW(deal){
 
 // ── Calc engine ────────────────────────────────────────────────────────────
 function PMT(rate,n,pv){if(!rate||!n||!pv)return 0;return pv*(rate*Math.pow(1+rate,n))/(Math.pow(1+rate,n)-1);}
+
+// Property Tax Proration — Louisiana convention (taxes paid in arrears).
+// Given an annual tax and an acquisition date, splits the year between seller
+// and buyer. Optionally also computes the seller-debit at a future sale/refi
+// date and the net tax cost over the hold.
+//
+// Inputs:
+//   annualTax   — number, the prior-year actual property tax bill
+//   acqDateStr  — "YYYY-MM-DD" string of the acquisition (close) date
+//   exitDateStr — optional "YYYY-MM-DD" string for sale (flip) or refi (BRRRR)
+//   strategy    — "Flip" | "Rental" | "BRRRR" | "Wholesale" — drives which
+//                  scenario applies; refi (BRRRR) doesn't trigger proration at
+//                  exit since it's not a transfer of ownership.
+//
+// Returns null if inputs are insufficient to compute. Otherwise an object with
+// every figure needed to render the proration card and feed downstream costs.
+function computeTaxProration(annualTax,acqDateStr,exitDateStr,strategy){
+  const t=num(annualTax);
+  if(!t||!acqDateStr)return null;
+  const acq=new Date(acqDateStr);
+  if(isNaN(acq.getTime()))return null;
+  const isLeap=(y)=>(y%4===0&&y%100!==0)||y%400===0;
+  const acqYear=acq.getFullYear();
+  const acqDaysInYear=isLeap(acqYear)?366:365;
+  const acqYearStart=new Date(acqYear,0,1);
+  const daysInSellerPeriodAtAcq=Math.floor((acq.getTime()-acqYearStart.getTime())/86400000);
+  const sellerCreditAtAcq=t*(daysInSellerPeriodAtAcq/acqDaysInYear);
+
+  let exit=null,daysInSellerPeriodAtSale=null,sellerDebitAtSale=null,daysHeld=null,netTaxOverHold=null,crossesYear=false,fullYearsCrossed=0;
+  // BRRRR refi is not a transfer — skip exit-side calcs even if a date is supplied.
+  const isFlipExit=strategy==="Flip"||strategy==="Wholesale";
+  if(exitDateStr&&isFlipExit){
+    exit=new Date(exitDateStr);
+    if(!isNaN(exit.getTime())){
+      const exitYear=exit.getFullYear();
+      const exitDaysInYear=isLeap(exitYear)?366:365;
+      const exitYearStart=new Date(exitYear,0,1);
+      daysInSellerPeriodAtSale=Math.floor((exit.getTime()-exitYearStart.getTime())/86400000);
+      sellerDebitAtSale=t*(daysInSellerPeriodAtSale/exitDaysInYear);
+      daysHeld=Math.max(0,Math.floor((exit.getTime()-acq.getTime())/86400000));
+      crossesYear=exitYear>acqYear;
+      fullYearsCrossed=Math.max(0,exitYear-acqYear);
+      // If hold crosses Dec 31, the buyer (you) pays the full annual bill that
+      // December as owner of record, then collects a credit at sale for the
+      // next year's portion. Net cost = (full years crossed × annualTax) +
+      // sale-side debit − acquisition-side credit.
+      if(crossesYear){
+        netTaxOverHold=(fullYearsCrossed*t)+sellerDebitAtSale-sellerCreditAtAcq;
+      }else{
+        // Same-year flip: net ≈ annualTax × (daysHeld / 365).
+        netTaxOverHold=sellerDebitAtSale-sellerCreditAtAcq;
+      }
+    }
+  }
+  return {
+    annualTax:t,
+    acqDate:acqDateStr,
+    acqYear,
+    acqDaysInYear,
+    daysInSellerPeriodAtAcq,
+    daysInBuyerPeriodAtAcq:acqDaysInYear-daysInSellerPeriodAtAcq,
+    sellerCreditAtAcq,
+    exitDate:exit?exitDateStr:null,
+    isFlipExit,
+    daysInSellerPeriodAtSale,
+    sellerDebitAtSale,
+    daysHeld,
+    crossesYear,
+    fullYearsCrossed,
+    netTaxOverHold,
+    strategy,
+  };
+}
+
+
 function computeAll(i){
   const matSub=i.budget.reduce((s,c)=>s+c.items.reduce((ss,it)=>ss+num(it.uc)*num(it.qty),0),0);
   const labB=num(i.laborBudget),contAmt=(matSub+labB)*num(i.contingencyPct);
@@ -677,9 +752,19 @@ function UWFlags({data,i}){
 }
 
 // ── UW Tabs ────────────────────────────────────────────────────────────────
-function SummaryUW({i,c}){
+function SummaryUW({i,c,deal}){
   const p1=i.partner1Name||"Boris",p2=i.partner2Name||"Jon";
   const ut=(i.unit_mix||[]).filter(u=>u.count&&u.beds&&u.baths);
+
+  // Tax proration — pull acquisition date from the deal's stage timestamps.
+  // Prefer dateClosed (actual close) > dateContract (under-contract projection)
+  // > today. Exit date is acquisition + (projectDuration + addlMonthsInterest)
+  // months, which approximates the bridge-loan payoff / sale-close window.
+  const acqDate=deal?.dateClosed||deal?.dateContract||(new Date().toISOString().slice(0,10));
+  const monthsToExit=num(i.projectDuration)+num(i.addlMonthsInterest);
+  const exitDateObj=acqDate?(()=>{const d=new Date(acqDate);d.setMonth(d.getMonth()+monthsToExit);return d;})():null;
+  const exitDateStr=exitDateObj?exitDateObj.toISOString().slice(0,10):null;
+  const taxProration=computeTaxProration(i.annualTaxes,acqDate,exitDateStr,deal?.deal_type||"Flip");
   return(<div>
     <Crd><NB ch="Property Overview"/><Pad>
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
@@ -720,6 +805,52 @@ function SummaryUW({i,c}){
         </div>))}
       </div>
     </Crd>
+    {/* Property Tax Proration — Louisiana arrears convention */}
+    {taxProration&&<Crd><NB ch="Property Tax Proration"/><Pad>
+      {(()=>{
+        const tp=taxProration;
+        const fmtD=(s)=>{if(!s)return"—";const d=new Date(s);return isNaN(d)?s:d.toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"});};
+        const isFlip=tp.isFlipExit;
+        const isBRRRR=tp.strategy==="BRRRR";
+        return(<Fragment>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:10}}>
+            <Met label="Annual Tax" val={fmt$(tp.annualTax)} col={C.navy}/>
+            <Met label="Acquisition Date" val={fmtD(tp.acqDate)}/>
+            <Met label="Days in Seller Period" val={tp.daysInSellerPeriodAtAcq+" / "+tp.acqDaysInYear}/>
+            <Met label="Seller Credit at Close" val={fmt$(tp.sellerCreditAtAcq)} col={C.ok}/>
+          </div>
+          {isFlip&&tp.exitDate&&<Fragment>
+            <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,marginBottom:10}}>
+              <div style={{fontSize:9,fontWeight:700,color:C.sec,textTransform:"uppercase",letterSpacing:.5,fontFamily:F,marginBottom:6}}>Sale-Side ({tp.strategy} Exit)</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                <Met label="Projected Sale Date" val={fmtD(tp.exitDate)}/>
+                <Met label="Days Held" val={(tp.daysHeld||0)+" days"}/>
+                <Met label="Days in Seller Period (Sale)" val={(tp.daysInSellerPeriodAtSale||0)+" days"}/>
+                <Met label="Seller Debit at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad}/>
+              </div>
+            </div>
+            <Crd mb={0}><Pad>
+              <table style={{width:"100%",borderCollapse:"collapse"}}><tbody>
+                <FR label="Seller Credit Received at Acquisition" val={fmt$(-tp.sellerCreditAtAcq)} col={C.ok} stripe/>
+                {tp.crossesYear&&<FR label={`Annual Tax Bill Paid (${tp.fullYearsCrossed} year${tp.fullYearsCrossed===1?"":"s"} crossed Dec 31)`} val={fmt$(tp.fullYearsCrossed*tp.annualTax)} col={C.bad}/>}
+                <FR label="Seller Debit Owed at Sale" val={fmt$(tp.sellerDebitAtSale||0)} col={C.bad} stripe/>
+                <tr style={{background:C.lb}}>
+                  <td style={tdS(C.navy,true)}>Net Tax Cost Over Hold</td>
+                  <td style={tdS(num(tp.netTaxOverHold)>0?C.bad:C.ok,true,true)}>{fmt$(num(tp.netTaxOverHold))}</td>
+                </tr>
+              </tbody></table>
+            </Pad></Crd>
+            {tp.crossesYear&&<div style={{marginTop:8,padding:"7px 10px",background:"#fef3c7",border:`1px solid ${C.gold}`,borderRadius:5,fontSize:9,color:C.gold,fontFamily:F,lineHeight:1.5,fontWeight:600}}>⚠ Hold crosses Dec 31. As owner of record on the bill date, you'll pay the full annual tax bill in December — model this as a Year-1 cash outflow. The Net Tax Cost above already accounts for it.</div>}
+          </Fragment>}
+          {isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
+            <strong style={{color:C.navy}}>BRRRR refi:</strong> a refinance is not a transfer of ownership, so no proration occurs at refi. Taxes accrue at <strong>{fmt$(tp.annualTax)}/yr</strong> as an operating expense from acquisition forward. The {fmt$(tp.sellerCreditAtAcq)} acquisition credit offsets your Year-1 partial responsibility.
+          </div>}
+          {!isFlip&&!isBRRRR&&<div style={{borderTop:`1px solid ${C.border}`,paddingTop:10,fontSize:10,color:C.sec,fontFamily:F,lineHeight:1.6}}>
+            <strong style={{color:C.navy}}>Long-term hold:</strong> the {fmt$(tp.sellerCreditAtAcq)} credit at close offsets your Year-1 partial responsibility. From Year 2 onward, taxes flow into the rental pro forma at the full annual rate ({fmt$(tp.annualTax)}/yr).
+          </div>}
+        </Fragment>);
+      })()}
+    </Pad></Crd>}
     <Crd><NB ch={"Fund Distribution — "+c.wf.type+" Capital"}>
       </NB>
       {/* Equity trap warning banner — DSCR Sponsor mode only */}
@@ -1843,7 +1974,7 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
       </div>
       {/* Content */}
       <div style={{padding:"16px 20px",maxHeight:"calc(100vh - 220px)",overflowY:"auto"}}>
-        {uwTab==="Summary"&&<SummaryUW i={uwInputs} c={c}/>}
+        {uwTab==="Summary"&&<SummaryUW i={uwInputs} c={c} deal={deal}/>}
         {uwTab==="Underwriting"&&<UWDetailTab i={uwInputs} c={c}/>}
         {uwTab==="Budget"&&<BudgetTab i={uwInputs} si={si} c={c}/>}
         {uwTab==="Rent Roll"&&<RentRollTab i={uwInputs} si={si}/>}
