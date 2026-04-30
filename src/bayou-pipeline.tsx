@@ -1858,49 +1858,95 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
   const [saving,setSaving]=useState(false);
   const [justSaved,setJustSaved]=useState(false);
   const [exportCopied,setExportCopied]=useState(false);
+  const [autoSaveStatus,setAutoSaveStatus]=useState("idle"); // idle | saving | saved | error
   // Acquisition-date override for tax proration. Lives at UWOverlay scope so
   // computeAll, the Underwriting tab card, and the Summary all see the same
   // value. Empty string = use the auto-derived date from deal stage stamps.
   const [acqDateOverride,setAcqDateOverride]=useState("");
   const storageKey=`brev-acquisitions:${deal.id}`;
   const isDraft=!!deal.isDraft;
+  // Refs used for the auto-save loop:
+  //   populatedForRef — which deal id has been populated into uwInputs already
+  //   lastLocalCommitRef — timestamp of our most recent auto-save commit; used
+  //     to ignore the realtime echo of our own write (would otherwise overwrite
+  //     ongoing typing with the just-saved value)
+  //   lastSyncedJsonRef — string-serialized last committed deal so we can
+  //     skip redundant saves when nothing actually changed
+  const populatedForRef=useRef(null);
+  const lastLocalCommitRef=useRef(0);
+  const lastSyncedJsonRef=useRef(null);
 
   // Source-of-truth resolution for the UW modal:
   //
   // The deal record itself is the cloud source of truth (kept fresh by the
   // Supabase realtime subscription on the parent component). For DRAFT deals
   // (created via "+ Add Deal" but not saved yet) we still read localStorage
-  // because the draft never reaches Supabase until first save. For SAVED
-  // deals we always rebuild uwInputs from the deal — that way edits made on
-  // another device show up immediately.
+  // because the draft never reaches Supabase until first save.
   //
-  // We DO still write in-flight edits to localStorage so a draft's contents
-  // survive an accidental browser-close. Once the user clicks Save, the
-  // commit fires upsertDeal and we wipe the cache to prevent stale carry-over.
+  // For SAVED deals we (re)populate from the deal in two cases:
+  //   1. The modal just opened on a different deal id
+  //   2. Another device just saved (deal.updated_at changed AND it's not the
+  //      echo of our own auto-save commit)
+  // In all other cases we leave uwInputs alone so the user's in-flight typing
+  // isn't disturbed by the realtime stream coming back from our own writes.
   useEffect(()=>{
-    if(isDraft){
-      try{
-        const res=localStorage.getItem(storageKey);
-        setUWInputs(res?JSON.parse(res):defaultUW(deal));
-      }catch{setUWInputs(defaultUW(deal));}
-    }else{
-      // For saved deals: always rebuild from the latest deal record. Any
-      // localStorage cache from a previous session is intentionally ignored —
-      // cloud wins. We rebuild on every change to deal so realtime updates
-      // flow into the open modal.
-      setUWInputs(defaultUW(deal));
+    const isFreshDeal=populatedForRef.current!==deal.id;
+    if(isFreshDeal){
+      populatedForRef.current=deal.id;
+      lastSyncedJsonRef.current=null;
+      lastLocalCommitRef.current=0;
+      if(isDraft){
+        try{
+          const res=localStorage.getItem(storageKey);
+          setUWInputs(res?JSON.parse(res):defaultUW(deal));
+        }catch{setUWInputs(defaultUW(deal));}
+      }else{
+        setUWInputs(defaultUW(deal));
+      }
+      return;
     }
+    if(isDraft)return;
+    // Same deal — figure out whether this update is from another device or
+    // an echo of our own. Anything within 3 seconds of our last commit is
+    // assumed to be our echo and ignored.
+    const sinceCommit=Date.now()-lastLocalCommitRef.current;
+    if(sinceCommit<3000)return;
+    setUWInputs(defaultUW(deal));
   },[deal.id,deal.updated_at,isDraft]);
 
   const si=useCallback((updater)=>{
     setUWInputs(prev=>{
       const next=typeof updater==="function"?updater(prev):updater;
-      // Only cache draft edits locally — saved deals don't need it (Supabase
-      // is the source of truth and edits flow through the Save button).
+      // Only cache draft edits locally — saved deals get cloud auto-save below.
       if(isDraft){try{localStorage.setItem(storageKey,JSON.stringify(next));}catch{}}
       return next;
     });
   },[storageKey,isDraft]);
+
+  // Auto-save: any change to uwInputs on a saved (non-draft) deal commits to
+  // Supabase after a 1-second pause in typing. Skips the commit if the
+  // serialized deal didn't actually change (e.g. user clicked into a field
+  // and out without editing).
+  useEffect(()=>{
+    if(!uwInputs||isDraft)return;
+    setAutoSaveStatus("saving");
+    const t=setTimeout(()=>{
+      try{
+        const c2=computeAll(uwInputs,deal,acqDateOverride);
+        const synced=syncUWToDeal(deal,uwInputs,c2);
+        const json=JSON.stringify(synced);
+        if(lastSyncedJsonRef.current===json){setAutoSaveStatus("saved");return;}
+        lastSyncedJsonRef.current=json;
+        lastLocalCommitRef.current=Date.now();
+        onSave(synced);
+        setAutoSaveStatus("saved");
+      }catch(e){
+        console.error("Auto-save failed:",e);
+        setAutoSaveStatus("error");
+      }
+    },1000);
+    return ()=>clearTimeout(t);
+  },[uwInputs,acqDateOverride,isDraft]);
 
   if(!uwInputs) return(<div style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:14,fontFamily:F}}>Loading underwriting model…</div></div>);
 
@@ -2088,9 +2134,13 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
           </div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <span style={{fontSize:9,color:"rgba(255,255,255,.5)",fontFamily:F,display:"flex",alignItems:"center",gap:4}}>
-            <span style={{width:6,height:6,borderRadius:"50%",background:C.ok,display:"inline-block"}}/>Auto-saved
-          </span>
+          {!isDraft&&<span style={{fontSize:9,color:"rgba(255,255,255,.5)",fontFamily:F,display:"flex",alignItems:"center",gap:4}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:autoSaveStatus==="saving"?C.gold:autoSaveStatus==="error"?C.bad:C.ok,display:"inline-block"}}/>
+            {autoSaveStatus==="saving"?"Saving…":autoSaveStatus==="error"?"Save failed":"Auto-saved"}
+          </span>}
+          {isDraft&&<span style={{fontSize:9,color:"rgba(255,255,255,.5)",fontFamily:F,display:"flex",alignItems:"center",gap:4}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:C.gold,display:"inline-block"}}/>Draft — click Save to commit
+          </span>}
           <button onClick={handleExport} style={{background:exportCopied?C.ok:C.accent,color:"#fff",border:"none",borderRadius:5,padding:"6px 14px",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F,display:"flex",alignItems:"center",gap:5,transition:"background .2s"}}>
             <span style={{fontSize:11}}>{exportCopied?"✓":"↓"}</span> {exportCopied?"Downloaded":"Export to v5.5"}
           </button>
