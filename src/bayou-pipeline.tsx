@@ -276,6 +276,11 @@ function blankBudget(seed){
 }
 
 function defaultUW(deal){
+  // If the deal already has a full uwInputs payload saved on it (from a prior
+  // session on any device), use it verbatim. This is the cross-device source
+  // of truth — every UW field, including bridge bands, rent roll, budget,
+  // DSCR lenders, comps, etc., round-trips through this object.
+  if(deal&&deal.uwInputs&&typeof deal.uwInputs==="object")return deal.uwInputs;
   return {
     address:deal.address||"",city:"Baton Rouge",state:"LA",zip:deal.zip||"",
     units:deal.units||1,sqft:deal.sqft||0,yearBuilt:"",floodZone:deal.flood_zone||"X",
@@ -674,6 +679,12 @@ function syncUWToDeal(deal,i,c){
   const arvVal=num(i.arv);
   return {
     ...deal,
+    // Full uwInputs payload — persisted to Supabase as part of the deal's data
+    // JSONB. This is what defaultUW(deal) reads back on load, so every UW
+    // field round-trips across devices. Without this, things like bridge bands,
+    // rent roll, budget, DSCR lenders would reset to hardcoded defaults on
+    // any other device.
+    uwInputs:i,
     // Property identity
     address:i.address||deal.address,
     city:i.city||deal.city||"Baton Rouge",
