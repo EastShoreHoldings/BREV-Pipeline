@@ -1865,20 +1865,42 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
   const storageKey=`brev-acquisitions:${deal.id}`;
   const isDraft=!!deal.isDraft;
 
+  // Source-of-truth resolution for the UW modal:
+  //
+  // The deal record itself is the cloud source of truth (kept fresh by the
+  // Supabase realtime subscription on the parent component). For DRAFT deals
+  // (created via "+ Add Deal" but not saved yet) we still read localStorage
+  // because the draft never reaches Supabase until first save. For SAVED
+  // deals we always rebuild uwInputs from the deal — that way edits made on
+  // another device show up immediately.
+  //
+  // We DO still write in-flight edits to localStorage so a draft's contents
+  // survive an accidental browser-close. Once the user clicks Save, the
+  // commit fires upsertDeal and we wipe the cache to prevent stale carry-over.
   useEffect(()=>{
-    try{
-      const res=localStorage.getItem(storageKey);
-      setUWInputs(res?JSON.parse(res):defaultUW(deal));
-    }catch{setUWInputs(defaultUW(deal));}
-  },[deal.id]);
+    if(isDraft){
+      try{
+        const res=localStorage.getItem(storageKey);
+        setUWInputs(res?JSON.parse(res):defaultUW(deal));
+      }catch{setUWInputs(defaultUW(deal));}
+    }else{
+      // For saved deals: always rebuild from the latest deal record. Any
+      // localStorage cache from a previous session is intentionally ignored —
+      // cloud wins. We rebuild on every change to deal so realtime updates
+      // flow into the open modal.
+      setUWInputs(defaultUW(deal));
+    }
+  },[deal.id,deal.updated_at,isDraft]);
 
   const si=useCallback((updater)=>{
     setUWInputs(prev=>{
       const next=typeof updater==="function"?updater(prev):updater;
-      try{localStorage.setItem(storageKey,JSON.stringify(next));}catch{}
+      // Only cache draft edits locally — saved deals don't need it (Supabase
+      // is the source of truth and edits flow through the Save button).
+      if(isDraft){try{localStorage.setItem(storageKey,JSON.stringify(next));}catch{}}
       return next;
     });
-  },[storageKey]);
+  },[storageKey,isDraft]);
 
   if(!uwInputs) return(<div style={{position:"fixed",inset:0,zIndex:9000,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:"#fff",fontSize:14,fontFamily:F}}>Loading underwriting model…</div></div>);
 
@@ -2077,6 +2099,9 @@ function UWOverlay({deal,onClose,onSave,onDiscard,updateDeal,allDeals}){
             setSaving(true);
             const synced=syncUWToDeal(deal,uwInputs,c);
             onSave(synced);
+            // Clear the per-device cache once the save commits — prevents
+            // stale draft state from leaking back into the modal next time.
+            try{localStorage.removeItem(storageKey);}catch{}
             setJustSaved(true);
             setTimeout(()=>{setJustSaved(false);setSaving(false);},1500);
           }} style={{background:justSaved?C.ok:(isDraft?"#16a34a":C.navy),color:"#fff",border:`1px solid ${justSaved?C.ok:"rgba(255,255,255,.3)"}`,borderRadius:5,padding:"6px 14px",fontSize:10,fontWeight:700,cursor:saving?"wait":"pointer",fontFamily:F,display:"flex",alignItems:"center",gap:5,transition:"background .2s"}}>
@@ -2931,6 +2956,19 @@ export default function App(){
     (async()=>{
       try{
         await migrateLocalStorageIfNeeded(user.id);
+        // One-time sweep: clear out any per-deal localStorage caches from prior
+        // versions of the app. These were the source of cross-device sync bugs
+        // where a stale local cache would override the cloud-saved fields.
+        try{
+          const sweepKey=`brev_uw_cache_swept_v1_${user.id}`;
+          if(!localStorage.getItem(sweepKey)){
+            for(let i=localStorage.length-1;i>=0;i--){
+              const k=localStorage.key(i);
+              if(k&&k.startsWith("brev-acquisitions:"))localStorage.removeItem(k);
+            }
+            localStorage.setItem(sweepKey,"1");
+          }
+        }catch{}
         const rows=await listDeals();
         if(!cancelled){setDealsRaw(rows);setLoadingDeals(false);}
       }catch(err){
