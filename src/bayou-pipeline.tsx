@@ -1385,11 +1385,20 @@ function DemoTab({i}){
         "B25034_011E", // Built 1939 or earlier
         "B25010_001E", // Avg household size
       ];
-      const url=`https://api.census.gov/data/2022/acs/acs5?get=${vars.join(",")}&for=zip%20code%20tabulation%20area:${z}`;
+      // Census Bureau requires an API key on every request (changed late 2025).
+      // Key is shipped via Vite env var VITE_CENSUS_API_KEY. Sign up free at
+      // https://api.census.gov/data/key_signup.html — arrives instantly.
+      const censusKey=import.meta.env.VITE_CENSUS_API_KEY;
+      if(!censusKey){
+        throw new Error("Census API key not configured. Get a free key at https://api.census.gov/data/key_signup.html and set VITE_CENSUS_API_KEY in Netlify env vars (and .env.local for local dev).");
+      }
+      const url=`https://api.census.gov/data/2023/acs/acs5?get=${vars.join(",")}&for=zip%20code%20tabulation%20area:${z}&key=${censusKey}`;
       const res=await fetch(url);
       if(!res.ok){
+        const body=await res.text().then(t=>t.slice(0,200));
         if(res.status===404)throw new Error(`No Census data for ZIP ${z} — it may not be a valid ZCTA.`);
-        throw new Error(`Census API ${res.status}: ${await res.text().then(t=>t.slice(0,200))}`);
+        if(res.status===401||res.status===403)throw new Error(`Census API rejected the key (HTTP ${res.status}). Confirm VITE_CENSUS_API_KEY is correct.`);
+        throw new Error(`Census API ${res.status}: ${body}`);
       }
       const rows=await res.json();
       if(!Array.isArray(rows)||rows.length<2)throw new Error(`No data returned for ZIP ${z}.`);

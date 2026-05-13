@@ -12,6 +12,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "/Users/jonkhalily/Documents/GitHub/brev-asset-dashboard", "run", "dev", "--", "--port", "5174"],
       "port": 5174
+    },
+    {
+      "name": "meridian-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/jonkhalily/Desktop/meridian/apps/web", "run", "dev"],
+      "port": 3100
+    },
+    {
+      "name": "meridian-api",
+      "runtimeExecutable": "/Users/jonkhalily/.local/bin/uv",
+      "runtimeArgs": ["--directory", "/Users/jonkhalily/Desktop/meridian/apps/api", "run", "uvicorn", "meridian.main:app", "--host", "127.0.0.1", "--port", "8001", "--reload"],
+      "port": 8001
     }
   ]
 }
